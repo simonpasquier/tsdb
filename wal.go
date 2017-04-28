@@ -62,8 +62,9 @@ type WAL struct {
 	segmentSize   int64
 
 	crc32 hash.Hash32
-	cur   *bufio.Writer
-	curN  int64
+	// XXX: Name these fields consistently with corresponding ChunkWriter fields?
+	cur  *bufio.Writer
+	curN int64
 
 	stopc chan struct{}
 	donec chan struct{}
@@ -77,6 +78,8 @@ const (
 // The table gets initialized with sync.Once but may still cause a race
 // with any other use of the crc32 package anywhere. Thus we initialize it
 // before.
+// XXX: Once should already do the right thing here if two callers
+//      construct the table at the same time, since it uses a lock?
 var castagnoliTable *crc32.Table
 
 func init() {
@@ -147,7 +150,7 @@ func (w *WAL) initSegments() error {
 	if len(fns) == 0 {
 		return nil
 	}
-	// We must open all file in read mode as we may have to truncate along
+	// We must open all files in read/write mode as we may have to truncate along
 	// the way and any file may become the tail.
 	for _, fn := range fns {
 		f, err := os.OpenFile(fn, os.O_RDWR, 0666)
@@ -178,10 +181,10 @@ func (w *WAL) initSegments() error {
 	return nil
 }
 
-// cut finishes the currently active segments and open the next one.
+// cut finishes the currently active segments and opens the next one.
 // The encoder is reset to point to the new segment.
 func (w *WAL) cut() error {
-	// Sync current tail to disc and close.
+	// Sync current tail to disk and close.
 	if tf := w.tail(); tf != nil {
 		if err := w.sync(); err != nil {
 			return err
@@ -276,7 +279,7 @@ func (w *WAL) run(interval time.Duration) {
 	}
 }
 
-// Close sync all data and closes the underlying resources.
+// Close syncs all data and closes the underlying resources.
 func (w *WAL) Close() error {
 	close(w.stopc)
 	<-w.donec
@@ -309,9 +312,10 @@ func (w *WAL) entry(et WALEntryType, flag byte, buf []byte) error {
 	w.mtx.Lock()
 	defer w.mtx.Unlock()
 
-	// Cut to the next segment if exceeds the file size unless it would also
+	// Cut to the next segment if the entry exceeds the file size unless it would also
 	// exceed the size of a new segment.
 	var (
+		// 6-byte header + 4-byte CRC32 + buf.
 		sz    = int64(6 + 4 + len(buf))
 		newsz = w.curN + sz
 	)

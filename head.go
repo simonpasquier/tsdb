@@ -530,7 +530,8 @@ func (h *headIndexReader) Series(ref uint32) (labels.Labels, []*ChunkMeta, error
 		metas = append(metas, &ChunkMeta{
 			MinTime: c.minTime,
 			MaxTime: c.maxTime,
-			Ref:     (uint64(ref) << 32) | uint64(i),
+			// XXX: in chunks.go, the lower 32 bit are the byte offset, not the chunk number?
+			Ref: (uint64(ref) << 32) | uint64(i),
 		})
 	}
 

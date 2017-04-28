@@ -26,6 +26,7 @@ import (
 )
 
 // DiskBlock handles reads against a Block of time series data.
+// XXX: Rename block to segment, as that's what we call it in chunks.go?
 type DiskBlock interface {
 	// Directory where block data is stored.
 	Dir() string
@@ -36,7 +37,7 @@ type DiskBlock interface {
 	// Index returns an IndexReader over the block's data.
 	Index() IndexReader
 
-	// Series returns a SeriesReader over the block's data.
+	// Chunks returns a ChunkReader over the block's data.
 	Chunks() ChunkReader
 
 	// Close releases all underlying resources of the block.
@@ -75,6 +76,7 @@ type BlockMeta struct {
 	ULID ulid.ULID `json:"ulid"`
 
 	// Sequence number of the block.
+	// XXX: Explain meaning.
 	Sequence int `json:"sequence"`
 
 	// MinTime and MaxTime specify the time range all samples
@@ -96,6 +98,7 @@ type BlockMeta struct {
 }
 
 const (
+	// XXX: Explain meaning.
 	flagNone = 0
 	flagStd  = 1
 )
@@ -138,8 +141,10 @@ func writeMetaFile(dir string, meta *BlockMeta) error {
 	enc := json.NewEncoder(f)
 	enc.SetIndent("", "\t")
 
-	if err := enc.Encode(&blockMeta{Version: 1, BlockMeta: meta}); err != nil {
-		return err
+	var merr MultiError
+	if merr.Add(enc.Encode(&blockMeta{Version: 1, BlockMeta: meta})); merr.Err() != nil {
+		merr.Add(f.Close())
+		return merr
 	}
 	if err := f.Close(); err != nil {
 		return err
@@ -241,6 +246,8 @@ func (f *mmapFile) Close() error {
 	}
 	return err1
 }
+
+// XXX: skiplist types are not used anywhere.
 
 // A skiplist maps offsets to values. The values found in the data at an
 // offset are strictly greater than the indexed value.
