@@ -109,6 +109,14 @@ type DB struct {
 	mtx    sync.RWMutex
 	blocks []Block
 
+	// Mutex for accessing writeWatermark and writesOpen.
+	// block layout.
+	writeMtx sync.Mutex
+	// Each write is given an internal id.
+	writeLastId uint64
+	// Which writes are currently in progress.
+	writesOpen map[uint64]struct{}
+
 	// Mutex that must be held when modifying just the head blocks
 	// or the general layout.
 	// Must never be held when acquiring a blocks's mutex!
@@ -205,6 +213,7 @@ func Open(dir string, l log.Logger, r prometheus.Registerer, opts *Options) (db 
 		dir:        dir,
 		logger:     l,
 		opts:       opts,
+		writesOpen: map[uint64]struct{}{},
 		compactc:   make(chan struct{}, 1),
 		donec:      make(chan struct{}),
 		stopc:      make(chan struct{}),
@@ -591,12 +600,19 @@ func (db *DB) Appender() Appender {
 	db.metrics.activeAppenders.Inc()
 
 	db.mtx.RLock()
-	return &dbAppender{db: db}
+
+	db.writeMtx.Lock()
+	id := db.writeLastId
+	db.writeLastId++
+	db.writesOpen[id] = struct{}{}
+	db.writeMtx.Unlock()
+	return &dbAppender{db: db, writeId: id}
 }
 
 type dbAppender struct {
-	db    *DB
-	heads []*metaAppender
+	db      *DB
+	heads   []*metaAppender
+	writeId uint64
 
 	samples int
 }
@@ -683,7 +699,7 @@ func (a *dbAppender) appenderAt(t int64) (*metaAppender, error) {
 	// Instantiate appender after returning headmtx!
 	app := &metaAppender{
 		meta: hb.Meta(),
-		app:  hb.Appender(),
+		app:  hb.Appender(a.writeId),
 	}
 	a.heads = append(a.heads, app)
 
@@ -734,6 +750,11 @@ func (db *DB) ensureHead(t int64) error {
 func (a *dbAppender) Commit() error {
 	defer a.db.metrics.activeAppenders.Dec()
 	defer a.db.mtx.RUnlock()
+	defer func() {
+		a.db.writeMtx.Lock()
+		delete(a.db.writesOpen, a.writeId)
+		a.db.writeMtx.Unlock()
+	}()
 
 	// Commits to partial appenders must be concurrent as concurrent appenders
 	// may have conflicting locks on head appenders.
@@ -765,6 +786,10 @@ func (a *dbAppender) Commit() error {
 func (a *dbAppender) Rollback() error {
 	defer a.db.metrics.activeAppenders.Dec()
 	defer a.db.mtx.RUnlock()
+
+	a.db.writeMtx.Lock()
+	delete(a.db.writesOpen, a.writeId)
+	a.db.writeMtx.Unlock()
 
 	var g errgroup.Group
 

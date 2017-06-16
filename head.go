@@ -141,7 +141,7 @@ func (h *HeadBlock) init() error {
 				return errors.Errorf("unknown series reference %d (max %d); abort WAL restore",
 					s.Ref, len(h.series))
 			}
-			h.series[s.Ref].append(s.T, s.V)
+			h.series[s.Ref].append(s.T, s.V, 0)
 
 			if !h.inBounds(s.T) {
 				return errors.Wrap(ErrOutOfBounds, "consume WAL")
@@ -379,7 +379,7 @@ func (h *HeadBlock) Querier(mint, maxt int64) Querier {
 }
 
 // Appender returns a new Appender against the head block.
-func (h *HeadBlock) Appender() Appender {
+func (h *HeadBlock) Appender(writeId uint64) Appender {
 	atomic.AddUint64(&h.activeWriters, 1)
 
 	h.mtx.RLock()
@@ -387,7 +387,7 @@ func (h *HeadBlock) Appender() Appender {
 	if h.closed {
 		panic(fmt.Sprintf("block %s already closed", h.dir))
 	}
-	return &headAppender{HeadBlock: h, samples: getHeadAppendBuffer()}
+  return &headAppender{HeadBlock: h, samples: getHeadAppendBuffer(), writeId: writeId}
 }
 
 // ActiveWriters returns true if the block has open write transactions.
@@ -420,6 +420,7 @@ type headAppender struct {
 	newSeries []*hashedLabels
 	newLabels []labels.Labels
 	newHashes map[uint64]uint64
+  writeId uint64
 
 	samples       []RefSample
 	highTimestamp int64
@@ -594,7 +595,7 @@ func (a *headAppender) Commit() error {
 	total := uint64(len(a.samples))
 
 	for _, s := range a.samples {
-		if !a.series[s.Ref].append(s.T, s.V) {
+		if !a.series[s.Ref].append(s.T, s.V, a.writeId) {
 			total--
 		}
 	}
@@ -783,6 +784,9 @@ type memSeries struct {
 	lastValue float64
 	sampleBuf [4]sample
 
+  // Write ids of the tail of the list of samples.
+  writeIds []uint64
+
 	app chunks.Appender // Current appender for the chunk.
 }
 
@@ -808,11 +812,12 @@ func newMemSeries(lset labels.Labels, id uint32, maxt int64) *memSeries {
 		ref:    id,
 		maxt:   maxt,
 		nextAt: math.MinInt64,
+    writeIds: []uint64{},
 	}
 	return s
 }
 
-func (s *memSeries) append(t int64, v float64) bool {
+func (s *memSeries) append(t int64, v float64, writeId uint64) bool {
 	const samplesPerChunk = 120
 
 	s.mtx.Lock()
@@ -845,6 +850,8 @@ func (s *memSeries) append(t int64, v float64) bool {
 	s.sampleBuf[1] = s.sampleBuf[2]
 	s.sampleBuf[2] = s.sampleBuf[3]
 	s.sampleBuf[3] = sample{t: t, v: v}
+
+  s.writeIds = append(s.writeIds, writeId)
 
 	return true
 }

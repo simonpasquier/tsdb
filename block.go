@@ -75,7 +75,10 @@ type Snapshottable interface {
 // Appendable defines an entity to which data can be appended.
 type Appendable interface {
 	// Appender returns a new Appender against an underlying store.
-	Appender() Appender
+	Appender(writeId uint64) Appender
+
+	// Busy returns whether there are any currently active appenders.
+	Busy() bool
 }
 
 // Queryable defines an entity which provides a Querier.
