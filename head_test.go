@@ -170,7 +170,7 @@ func TestSkippingInvalidValuesInSameTxn(t *testing.T) {
 	require.Equal(t, uint64(1), hb.Meta().Stats.NumSamples)
 
 	// Make sure the right value is stored.
-	q := hb.Querier(0, 10)
+	q := hb.Querier(0, 10, nil)
 	ss := q.Select(labels.NewEqualMatcher("a", "b"))
 	ssMap, err := readSeriesSet(ss)
 	require.NoError(t, err)
@@ -190,7 +190,7 @@ func TestSkippingInvalidValuesInSameTxn(t *testing.T) {
 	require.NoError(t, app.Commit())
 	require.Equal(t, uint64(2), hb.Meta().Stats.NumSamples)
 
-	q = hb.Querier(0, 10)
+	q = hb.Querier(0, 10, nil)
 	ss = q.Select(labels.NewEqualMatcher("a", "b"))
 	ssMap, err = readSeriesSet(ss)
 	require.NoError(t, err)
@@ -326,7 +326,7 @@ func TestHeadBlock_e2e(t *testing.T) {
 			mint := rand.Int63n(300)
 			maxt := mint + rand.Int63n(timeInterval*int64(numDatapoints))
 
-			q := hb.Querier(mint, maxt)
+			q := hb.Querier(mint, maxt, nil)
 			ss := q.Select(qry.ms...)
 
 			// Build the mockSeriesSet.
@@ -435,7 +435,7 @@ Outer:
 		}
 
 		// Compare the result.
-		q := hb.Querier(0, numSamples)
+		q := hb.Querier(0, numSamples, nil)
 		res := q.Select(labels.NewEqualMatcher("a", "b"))
 
 		expSamples := make([]sample, 0, len(c.remaint))
@@ -495,7 +495,7 @@ func TestDeleteUntilCurMax(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, app.Commit())
 
-	q := hb.Querier(0, 100000)
+	q := hb.Querier(0, 100000, nil)
 	res := q.Select(labels.NewEqualMatcher("a", "b"))
 
 	require.True(t, res.Next())
@@ -643,7 +643,7 @@ func TestDelete_e2e(t *testing.T) {
 			mint := rand.Int63n(200)
 			maxt := mint + rand.Int63n(timeInterval*int64(numDatapoints))
 
-			q := hb.Querier(mint, maxt)
+			q := hb.Querier(mint, maxt, nil)
 			ss := q.Select(del.ms...)
 
 			// Build the mockSeriesSet.

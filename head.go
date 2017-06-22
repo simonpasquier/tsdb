@@ -334,10 +334,12 @@ func (h *HeadBlock) Dir() string { return h.dir }
 func (h *HeadBlock) Index() IndexReader { return &headIndexReader{h} }
 
 // Chunks returns a ChunkReader against the block.
-func (h *HeadBlock) Chunks() ChunkReader { return &headChunkReader{h} }
+func (h *HeadBlock) Chunks(isolation *IsolationState) ChunkReader {
+	return &headChunkReader{HeadBlock: h, isolation: isolation}
+}
 
 // Querier returns a new Querier against the block for the range [mint, maxt].
-func (h *HeadBlock) Querier(mint, maxt int64) Querier {
+func (h *HeadBlock) Querier(mint, maxt int64, isolation *IsolationState) Querier {
 	h.mtx.RLock()
 	defer h.mtx.RUnlock()
 
@@ -352,7 +354,7 @@ func (h *HeadBlock) Querier(mint, maxt int64) Querier {
 		mint:       mint,
 		maxt:       maxt,
 		index:      h.Index(),
-		chunks:     h.Chunks(),
+		chunks:     h.Chunks(isolation),
 		tombstones: h.Tombstones(),
 
 		postingsMapper: func(p Postings) Postings {
@@ -387,7 +389,7 @@ func (h *HeadBlock) Appender(writeId uint64) Appender {
 	if h.closed {
 		panic(fmt.Sprintf("block %s already closed", h.dir))
 	}
-  return &headAppender{HeadBlock: h, samples: getHeadAppendBuffer(), writeId: writeId}
+	return &headAppender{HeadBlock: h, samples: getHeadAppendBuffer(), writeId: writeId}
 }
 
 // ActiveWriters returns true if the block has open write transactions.
@@ -420,7 +422,7 @@ type headAppender struct {
 	newSeries []*hashedLabels
 	newLabels []labels.Labels
 	newHashes map[uint64]uint64
-  writeId uint64
+	writeId   uint64
 
 	samples       []RefSample
 	highTimestamp int64
@@ -625,6 +627,7 @@ func (a *headAppender) Rollback() error {
 
 type headChunkReader struct {
 	*HeadBlock
+	isolation *IsolationState
 }
 
 // Chunk returns the chunk for the reference number.
@@ -636,23 +639,25 @@ func (h *headChunkReader) Chunk(ref uint64) (chunks.Chunk, error) {
 	ci := (ref << 32) >> 32
 
 	c := &safeChunk{
-		Chunk: h.series[si].chunks[ci].chunk,
-		s:     h.series[si],
-		i:     int(ci),
+		Chunk:     h.series[si].chunks[ci].chunk,
+		s:         h.series[si],
+		i:         int(ci),
+		isolation: h.isolation,
 	}
 	return c, nil
 }
 
 type safeChunk struct {
 	chunks.Chunk
-	s *memSeries
-	i int
+	s         *memSeries
+	i         int
+	isolation *IsolationState
 }
 
 func (c *safeChunk) Iterator() chunks.Iterator {
 	c.s.mtx.RLock()
 	defer c.s.mtx.RUnlock()
-	return c.s.iterator(c.i)
+	return c.s.iterator(c.i, c.isolation)
 }
 
 // func (c *safeChunk) Appender() (chunks.Appender, error) { panic("illegal") }
@@ -784,8 +789,8 @@ type memSeries struct {
 	lastValue float64
 	sampleBuf [4]sample
 
-  // Write ids of the tail of the list of samples.
-  writeIds []uint64
+	// Write ids of the tail of the list of samples.
+	writeIds []uint64
 
 	app chunks.Appender // Current appender for the chunk.
 }
@@ -808,11 +813,11 @@ func (s *memSeries) cut(mint int64) *memChunk {
 
 func newMemSeries(lset labels.Labels, id uint32, maxt int64) *memSeries {
 	s := &memSeries{
-		lset:   lset,
-		ref:    id,
-		maxt:   maxt,
-		nextAt: math.MinInt64,
-    writeIds: []uint64{},
+		lset:     lset,
+		ref:      id,
+		maxt:     maxt,
+		nextAt:   math.MinInt64,
+		writeIds: []uint64{},
 	}
 	return s
 }
@@ -851,7 +856,7 @@ func (s *memSeries) append(t int64, v float64, writeId uint64) bool {
 	s.sampleBuf[2] = s.sampleBuf[3]
 	s.sampleBuf[3] = sample{t: t, v: v}
 
-  s.writeIds = append(s.writeIds, writeId)
+	s.writeIds = append(s.writeIds, writeId)
 
 	return true
 }
@@ -867,9 +872,10 @@ func computeChunkEndTime(start, cur, max int64) int64 {
 	return start + (max-start)/a
 }
 
-func (s *memSeries) iterator(i int) chunks.Iterator {
+func (s *memSeries) iterator(i int, isolation *IsolationState) chunks.Iterator {
 	c := s.chunks[i]
 
+	// XXX: Need to handle isolation here too.
 	if i < len(s.chunks)-1 {
 		return c.chunk.Iterator()
 	}

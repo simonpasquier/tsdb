@@ -62,12 +62,22 @@ func (s *DB) Querier(mint, maxt int64) Querier {
 	blocks := s.blocksForInterval(mint, maxt)
 	s.headmtx.RUnlock()
 
+	s.writeMtx.Lock()
+	isolation := &IsolationState{
+		maxWriteId:       s.writeLastId,
+		incompleteWrites: make(map[uint64]struct{}, len(s.writesOpen)),
+	}
+	for k, _ := range s.writesOpen {
+		isolation.incompleteWrites[k] = struct{}{}
+	}
+	s.writeMtx.Unlock()
+
 	sq := &querier{
 		blocks: make([]Querier, 0, len(blocks)),
 		db:     s,
 	}
 	for _, b := range blocks {
-		sq.blocks = append(sq.blocks, b.Querier(mint, maxt))
+		sq.blocks = append(sq.blocks, b.Querier(mint, maxt, isolation))
 	}
 
 	return sq

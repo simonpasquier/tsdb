@@ -37,7 +37,7 @@ type DiskBlock interface {
 	Index() IndexReader
 
 	// Chunks returns a ChunkReader over the block's data.
-	Chunks() ChunkReader
+	Chunks(*IsolationState) ChunkReader
 
 	// Tombstones returns a TombstoneReader over the block's deleted data.
 	Tombstones() TombstoneReader
@@ -83,7 +83,13 @@ type Appendable interface {
 
 // Queryable defines an entity which provides a Querier.
 type Queryable interface {
-	Querier(mint, maxt int64) Querier
+	Querier(mint, maxt int64, isolation *IsolationState) Querier
+}
+
+type IsolationState struct {
+	// We will ignore all writes above the max, and that are incomplete.
+	maxWriteId       uint64
+	incompleteWrites map[uint64]struct{}
 }
 
 // BlockMeta provides meta information about a block.
@@ -227,19 +233,19 @@ func (pb *persistedBlock) String() string {
 	return pb.meta.ULID.String()
 }
 
-func (pb *persistedBlock) Querier(mint, maxt int64) Querier {
+func (pb *persistedBlock) Querier(mint, maxt int64, isolation *IsolationState) Querier {
 	return &blockQuerier{
 		mint:       mint,
 		maxt:       maxt,
 		index:      pb.Index(),
-		chunks:     pb.Chunks(),
+		chunks:     pb.Chunks(nil),
 		tombstones: pb.Tombstones(),
 	}
 }
 
-func (pb *persistedBlock) Dir() string         { return pb.dir }
-func (pb *persistedBlock) Index() IndexReader  { return pb.indexr }
-func (pb *persistedBlock) Chunks() ChunkReader { return pb.chunkr }
+func (pb *persistedBlock) Dir() string                        { return pb.dir }
+func (pb *persistedBlock) Index() IndexReader                 { return pb.indexr }
+func (pb *persistedBlock) Chunks(*IsolationState) ChunkReader { return pb.chunkr }
 func (pb *persistedBlock) Tombstones() TombstoneReader {
 	return pb.tombstones
 }
