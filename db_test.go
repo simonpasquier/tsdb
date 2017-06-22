@@ -39,6 +39,10 @@ func readSeriesSet(ss SeriesSet) (map[string][]sample, error) {
 			samples = append(samples, sample{t: t, v: v})
 		}
 
+		if len(samples) == 0 {
+			continue
+		}
+
 		name := series.Labels().String()
 		result[name] = samples
 		if err := ss.Err(); err != nil {
@@ -239,13 +243,13 @@ func TestDBCannotSeePartialCommits(t *testing.T) {
 				_, err := app.Add(labels.FromStrings("foo", "bar", "a", strconv.Itoa(j)), int64(iter), float64(iter))
 				require.NoError(t, err)
 			}
+			err = app.Commit()
+			require.NoError(t, err)
+
 			if iter == 0 {
 				close(firstInsert)
 			}
 			iter++
-
-			err = app.Commit()
-			require.NoError(t, err)
 
 			select {
 			case <-stop:
@@ -256,7 +260,6 @@ func TestDBCannotSeePartialCommits(t *testing.T) {
 	}()
 
 	<-firstInsert
-
 
 	// This is a race condition, so do a few tests to tickle it.
 	// Usually most will fail.

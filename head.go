@@ -789,7 +789,7 @@ type memSeries struct {
 	lastValue float64
 	sampleBuf [4]sample
 
-	// Write ids of the tail of the list of samples.
+	// Write ids of samples.
 	writeIds []uint64
 
 	app chunks.Appender // Current appender for the chunk.
@@ -875,16 +875,38 @@ func computeChunkEndTime(start, cur, max int64) int64 {
 func (s *memSeries) iterator(i int, isolation *IsolationState) chunks.Iterator {
 	c := s.chunks[i]
 
-	// XXX: Need to handle isolation here too.
+	stopAfter := c.samples
+	if isolation != nil {
+		for index, writeId := range s.writeIds {
+			if _, ok := isolation.incompleteWrites[writeId]; ok || writeId > isolation.maxWriteId {
+				for _, c := range s.chunks[:i] {
+					index -= c.samples
+				}
+				if index < c.samples {
+					stopAfter = index
+				}
+				break
+			}
+		}
+	}
+
 	if i < len(s.chunks)-1 {
-		return c.chunk.Iterator()
+		it := &memSafeIterator{
+			Iterator:  c.chunk.Iterator(),
+			i:         -1,
+			total:     c.samples,
+			stopAfter: stopAfter,
+		}
+		return it
 	}
 
 	it := &memSafeIterator{
-		Iterator: c.chunk.Iterator(),
-		i:        -1,
-		total:    c.samples,
-		buf:      s.sampleBuf,
+		Iterator:        c.chunk.Iterator(),
+		i:               -1,
+		total:           c.samples,
+		stopAfter:       stopAfter,
+		bufferedSamples: 4,
+		buf:             s.sampleBuf,
 	}
 	return it
 }
@@ -902,26 +924,28 @@ type memChunk struct {
 type memSafeIterator struct {
 	chunks.Iterator
 
-	i     int
-	total int
-	buf   [4]sample
+	i               int
+	total           int
+	stopAfter       int
+	bufferedSamples int
+	buf             [4]sample
 }
 
 func (it *memSafeIterator) Next() bool {
-	if it.i+1 >= it.total {
+	if it.i+1 >= it.stopAfter {
 		return false
 	}
 	it.i++
-	if it.total-it.i > 4 {
+	if it.total-it.i > it.bufferedSamples {
 		return it.Iterator.Next()
 	}
 	return true
 }
 
 func (it *memSafeIterator) At() (int64, float64) {
-	if it.total-it.i > 4 {
+	if it.total-it.i > it.bufferedSamples {
 		return it.Iterator.At()
 	}
-	s := it.buf[4-(it.total-it.i)]
+	s := it.buf[it.bufferedSamples-(it.total-it.i)]
 	return s.t, s.v
 }
