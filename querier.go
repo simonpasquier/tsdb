@@ -49,8 +49,37 @@ type Series interface {
 // querier aggregates querying results from time blocks within
 // a single partition.
 type querier struct {
-	db     *DB
-	blocks []Querier
+	db        *DB
+	isolation *IsolationState
+	blocks    []Querier
+}
+
+// IsolationState returns an objet used to control isolation
+// between a query and writes. Must be closed when complete.
+func (s *DB) IsolationState() *IsolationState {
+	s.writeMtx.Lock()
+	isolation := &IsolationState{
+		maxWriteId:       s.writeLastId,
+		incompleteWrites: make(map[uint64]struct{}, len(s.writesOpen)),
+		db:               s,
+	}
+	for k, _ := range s.writesOpen {
+		isolation.incompleteWrites[k] = struct{}{}
+	}
+	s.writeMtx.Unlock()
+
+	s.readMtx.Lock()
+	isolation.readId = s.readLastId
+	s.readLastId++
+	s.readsOpen[isolation.readId] = isolation
+	s.readMtx.Unlock()
+	return isolation
+}
+
+func (i *IsolationState) Close() {
+	i.db.readMtx.Lock()
+	delete(i.db.readsOpen, i.readId)
+	i.db.readMtx.Unlock()
 }
 
 // Querier returns a new querier over the data partition for the given
@@ -62,22 +91,13 @@ func (s *DB) Querier(mint, maxt int64) Querier {
 	blocks := s.blocksForInterval(mint, maxt)
 	s.headmtx.RUnlock()
 
-	s.writeMtx.Lock()
-	isolation := &IsolationState{
-		maxWriteId:       s.writeLastId,
-		incompleteWrites: make(map[uint64]struct{}, len(s.writesOpen)),
-	}
-	for k, _ := range s.writesOpen {
-		isolation.incompleteWrites[k] = struct{}{}
-	}
-	s.writeMtx.Unlock()
-
 	sq := &querier{
-		blocks: make([]Querier, 0, len(blocks)),
-		db:     s,
+		blocks:    make([]Querier, 0, len(blocks)),
+		db:        s,
+		isolation: s.IsolationState(),
 	}
 	for _, b := range blocks {
-		sq.blocks = append(sq.blocks, b.Querier(mint, maxt, isolation))
+		sq.blocks = append(sq.blocks, b.Querier(mint, maxt, sq.isolation))
 	}
 
 	return sq
@@ -133,6 +153,7 @@ func (q *querier) Close() error {
 		merr.Add(bq.Close())
 	}
 	q.db.mtx.RUnlock()
+	q.isolation.Close()
 
 	return merr.Err()
 }

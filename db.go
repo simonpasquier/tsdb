@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"io"
 	"io/ioutil"
+	"math"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -109,13 +110,19 @@ type DB struct {
 	mtx    sync.RWMutex
 	blocks []Block
 
-	// Mutex for accessing writeWatermark and writesOpen.
-	// block layout.
+	// Mutex for accessing writeLastId and writesOpen.
 	writeMtx sync.Mutex
 	// Each write is given an internal id.
 	writeLastId uint64
 	// Which writes are currently in progress.
 	writesOpen map[uint64]struct{}
+
+	// Mutex for accessing readLastId.
+	readMtx sync.Mutex
+	// Each isolated read is given an internal id.
+	readLastId uint64
+	// All current in use isolationStates.
+	readsOpen map[uint64]*IsolationState
 
 	// Mutex that must be held when modifying just the head blocks
 	// or the general layout.
@@ -214,6 +221,7 @@ func Open(dir string, l log.Logger, r prometheus.Registerer, opts *Options) (db 
 		logger:     l,
 		opts:       opts,
 		writesOpen: map[uint64]struct{}{},
+		readsOpen:  map[uint64]*IsolationState{},
 		compactc:   make(chan struct{}, 1),
 		donec:      make(chan struct{}),
 		stopc:      make(chan struct{}),
@@ -745,6 +753,30 @@ func (db *DB) ensureHead(t int64) error {
 
 	_, err := db.createHeadBlock(mint, maxt)
 	return err
+}
+
+// readLowWatermark returns the writeId below which
+// we no longer need to track which writes were from
+// which writeId.
+// TODO: Optimise this, needs to be O(1).
+func (db *DB) readLowWatermark() uint64 {
+  db.writeMtx.Lock()
+  id := db.writeLastId
+  db.writeMtx.UnLock()
+
+  db.readMtx.Lock()
+  for _, isolation := range db.openReads {
+    if isolation.maxWriteId < id {
+      id = isolation.maxWriteId
+    }
+    for i := range isolation.incompleteWrites {
+      if i < id {
+        id = i
+      }
+    }
+  }
+  db.readMtx.Unlock()
+  return id
 }
 
 func (a *dbAppender) Commit() error {
