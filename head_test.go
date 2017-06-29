@@ -112,12 +112,12 @@ func TestAmendDatapointCausesError(t *testing.T) {
 
 	hb := createTestHeadBlock(t, dir, 0, 1000)
 
-	app := hb.Appender(0)
+	app := hb.Appender(0, 0)
 	_, err := app.Add(labels.Labels{}, 0, 0)
 	require.NoError(t, err, "Failed to add sample")
 	require.NoError(t, app.Commit(), "Unexpected error committing appender")
 
-	app = hb.Appender(0)
+	app = hb.Appender(0, 0)
 	_, err = app.Add(labels.Labels{}, 0, 1)
 	require.Equal(t, ErrAmendSample, err)
 }
@@ -128,12 +128,12 @@ func TestDuplicateNaNDatapointNoAmendError(t *testing.T) {
 
 	hb := createTestHeadBlock(t, dir, 0, 1000)
 
-	app := hb.Appender(0)
+	app := hb.Appender(0, 0)
 	_, err := app.Add(labels.Labels{}, 0, math.NaN())
 	require.NoError(t, err, "Failed to add sample")
 	require.NoError(t, app.Commit(), "Unexpected error committing appender")
 
-	app = hb.Appender(0)
+	app = hb.Appender(0, 0)
 	_, err = app.Add(labels.Labels{}, 0, math.NaN())
 	require.NoError(t, err)
 }
@@ -144,12 +144,12 @@ func TestNonDuplicateNaNDatapointsCausesAmendError(t *testing.T) {
 
 	hb := createTestHeadBlock(t, dir, 0, 1000)
 
-	app := hb.Appender(0)
+	app := hb.Appender(0, 0)
 	_, err := app.Add(labels.Labels{}, 0, math.Float64frombits(0x7ff0000000000001))
 	require.NoError(t, err, "Failed to add sample")
 	require.NoError(t, app.Commit(), "Unexpected error committing appender")
 
-	app = hb.Appender(0)
+	app = hb.Appender(0, 0)
 	_, err = app.Add(labels.Labels{}, 0, math.Float64frombits(0x7ff0000000000002))
 	require.Equal(t, ErrAmendSample, err)
 }
@@ -161,7 +161,7 @@ func TestSkippingInvalidValuesInSameTxn(t *testing.T) {
 	hb := createTestHeadBlock(t, dir, 0, 1000)
 
 	// Append AmendedValue.
-	app := hb.Appender(0)
+	app := hb.Appender(0, 0)
 	_, err := app.Add(labels.Labels{{"a", "b"}}, 0, 1)
 	require.NoError(t, err)
 	_, err = app.Add(labels.Labels{{"a", "b"}}, 0, 2)
@@ -182,7 +182,7 @@ func TestSkippingInvalidValuesInSameTxn(t *testing.T) {
 	require.NoError(t, q.Close())
 
 	// Append Out of Order Value.
-	app = hb.Appender(0)
+	app = hb.Appender(0, 0)
 	_, err = app.Add(labels.Labels{{"a", "b"}}, 10, 3)
 	require.NoError(t, err)
 	_, err = app.Add(labels.Labels{{"a", "b"}}, 7, 5)
@@ -260,7 +260,7 @@ func TestHeadBlock_e2e(t *testing.T) {
 	defer os.RemoveAll(dir)
 
 	hb := createTestHeadBlock(t, dir, minTime, maxTime)
-	app := hb.Appender(0)
+	app := hb.Appender(0, 0)
 
 	for _, l := range lbls {
 		ls := labels.New(l...)
@@ -389,7 +389,7 @@ func TestHBDeleteSimple(t *testing.T) {
 	defer os.RemoveAll(dir)
 
 	hb := createTestHeadBlock(t, dir, 0, numSamples)
-	app := hb.Appender(0)
+	app := hb.Appender(0, 0)
 
 	smpls := make([]float64, numSamples)
 	for i := int64(0); i < numSamples; i++ {
@@ -480,7 +480,7 @@ func TestDeleteUntilCurMax(t *testing.T) {
 	defer os.RemoveAll(dir)
 
 	hb := createTestHeadBlock(t, dir, 0, 2*numSamples)
-	app := hb.Appender(0)
+	app := hb.Appender(0, 0)
 
 	smpls := make([]float64, numSamples)
 	for i := int64(0); i < numSamples; i++ {
@@ -490,7 +490,7 @@ func TestDeleteUntilCurMax(t *testing.T) {
 
 	require.NoError(t, app.Commit())
 	require.NoError(t, hb.Delete(0, 10000, labels.NewEqualMatcher("a", "b")))
-	app = hb.Appender(0)
+	app = hb.Appender(0, 0)
 	_, err := app.Add(labels.Labels{{"a", "b"}}, 11, 1)
 	require.NoError(t, err)
 	require.NoError(t, app.Commit())
@@ -565,7 +565,7 @@ func TestDelete_e2e(t *testing.T) {
 	defer os.RemoveAll(dir)
 
 	hb := createTestHeadBlock(t, dir, minTime, maxTime)
-	app := hb.Appender(0)
+	app := hb.Appender(0, 0)
 
 	for _, l := range lbls {
 		ls := labels.New(l...)

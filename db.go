@@ -19,7 +19,6 @@ import (
 	"fmt"
 	"io"
 	"io/ioutil"
-	"math"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -610,17 +609,18 @@ func (db *DB) Appender() Appender {
 	db.mtx.RLock()
 
 	db.writeMtx.Lock()
-	id := db.writeLastId
 	db.writeLastId++
+	id := db.writeLastId
 	db.writesOpen[id] = struct{}{}
 	db.writeMtx.Unlock()
-	return &dbAppender{db: db, writeId: id}
+	return &dbAppender{db: db, writeId: id, cleanupWriteIdsBelow: db.readLowWatermark()}
 }
 
 type dbAppender struct {
-	db      *DB
-	heads   []*metaAppender
-	writeId uint64
+	db                   *DB
+	heads                []*metaAppender
+	writeId              uint64
+	cleanupWriteIdsBelow uint64
 
 	samples int
 }
@@ -707,7 +707,7 @@ func (a *dbAppender) appenderAt(t int64) (*metaAppender, error) {
 	// Instantiate appender after returning headmtx!
 	app := &metaAppender{
 		meta: hb.Meta(),
-		app:  hb.Appender(a.writeId),
+		app:  hb.Appender(a.writeId, a.cleanupWriteIdsBelow),
 	}
 	a.heads = append(a.heads, app)
 
@@ -760,23 +760,23 @@ func (db *DB) ensureHead(t int64) error {
 // which writeId.
 // TODO: Optimise this, needs to be O(1).
 func (db *DB) readLowWatermark() uint64 {
-  db.writeMtx.Lock()
-  id := db.writeLastId
-  db.writeMtx.UnLock()
+	db.writeMtx.Lock()
+	id := db.writeLastId
+	db.writeMtx.Unlock()
 
-  db.readMtx.Lock()
-  for _, isolation := range db.openReads {
-    if isolation.maxWriteId < id {
-      id = isolation.maxWriteId
-    }
-    for i := range isolation.incompleteWrites {
-      if i < id {
-        id = i
-      }
-    }
-  }
-  db.readMtx.Unlock()
-  return id
+	db.readMtx.Lock()
+	for _, isolation := range db.readsOpen {
+		if isolation.maxWriteId < id {
+			id = isolation.maxWriteId
+		}
+		for i := range isolation.incompleteWrites {
+			if i < id {
+				id = i
+			}
+		}
+	}
+	db.readMtx.Unlock()
+	return id
 }
 
 func (a *dbAppender) Commit() error {

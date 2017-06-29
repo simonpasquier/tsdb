@@ -381,7 +381,7 @@ func (h *HeadBlock) Querier(mint, maxt int64, isolation *IsolationState) Querier
 }
 
 // Appender returns a new Appender against the head block.
-func (h *HeadBlock) Appender(writeId uint64) Appender {
+func (h *HeadBlock) Appender(writeId, cleanupWriteIdsBelow uint64) Appender {
 	atomic.AddUint64(&h.activeWriters, 1)
 
 	h.mtx.RLock()
@@ -389,7 +389,7 @@ func (h *HeadBlock) Appender(writeId uint64) Appender {
 	if h.closed {
 		panic(fmt.Sprintf("block %s already closed", h.dir))
 	}
-	return &headAppender{HeadBlock: h, samples: getHeadAppendBuffer(), writeId: writeId}
+	return &headAppender{HeadBlock: h, samples: getHeadAppendBuffer(), writeId: writeId, cleanupWriteIdsBelow: cleanupWriteIdsBelow}
 }
 
 // ActiveWriters returns true if the block has open write transactions.
@@ -419,10 +419,11 @@ func putHeadAppendBuffer(b []RefSample) {
 type headAppender struct {
 	*HeadBlock
 
-	newSeries []*hashedLabels
-	newLabels []labels.Labels
-	newHashes map[uint64]uint64
-	writeId   uint64
+	newSeries            []*hashedLabels
+	newLabels            []labels.Labels
+	newHashes            map[uint64]uint64
+	writeId              uint64
+	cleanupWriteIdsBelow uint64
 
 	samples       []RefSample
 	highTimestamp int64
@@ -600,6 +601,9 @@ func (a *headAppender) Commit() error {
 		if !a.series[s.Ref].append(s.T, s.V, a.writeId) {
 			total--
 		}
+		// Also take the opportuinty to GC writeIds in the memSeries
+		// that are no longer required.
+		a.series[s.Ref].cleanupWriteIdsBelow(a.cleanupWriteIdsBelow)
 	}
 
 	atomic.AddUint64(&a.meta.Stats.NumSamples, total)
@@ -789,7 +793,7 @@ type memSeries struct {
 	lastValue float64
 	sampleBuf [4]sample
 
-	// Write ids of samples.
+	// Write ids of most recent samples.
 	writeIds []uint64
 
 	app chunks.Appender // Current appender for the chunk.
@@ -861,6 +865,25 @@ func (s *memSeries) append(t int64, v float64, writeId uint64) bool {
 	return true
 }
 
+func (s *memSeries) cleanupWriteIdsBelow(bound uint64) {
+	s.mtx.Lock()
+	defer s.mtx.Unlock()
+
+	toRemove := 0
+	for _, id := range s.writeIds {
+		if id < bound {
+			toRemove++
+		} else {
+			break
+		}
+	}
+
+	if toRemove != 0 {
+		// XXX This doesn't free the RAM.
+		s.writeIds = s.writeIds[toRemove:]
+	}
+}
+
 // computeChunkEndTime estimates the end timestamp based the beginning of a chunk,
 // its current timestamp and the upper bound up to which we insert data.
 // It assumes that the time range is 1/4 full.
@@ -877,15 +900,25 @@ func (s *memSeries) iterator(i int, isolation *IsolationState) chunks.Iterator {
 
 	stopAfter := c.samples
 	if isolation != nil {
-		for index, writeId := range s.writeIds {
-			if _, ok := isolation.incompleteWrites[writeId]; ok || writeId > isolation.maxWriteId {
-				for _, c := range s.chunks[:i] {
-					index -= c.samples
+		totalSamples := 0
+		previousSamples := 0 // Samples before this chunk.
+		for j, d := range s.chunks {
+			totalSamples += d.samples
+			if j < i {
+				previousSamples += d.samples
+			}
+		}
+		writeIdsToConsider := (previousSamples + c.samples) - (totalSamples - len(s.writeIds))
+		if writeIdsToConsider > 0 {
+			// writeIds extends back to at least this chunk.
+			for index, writeId := range s.writeIds[:writeIdsToConsider] {
+				if _, ok := isolation.incompleteWrites[writeId]; ok || writeId > isolation.maxWriteId {
+					stopAfter = index - (writeIdsToConsider - c.samples)
+					if stopAfter < 0 {
+						stopAfter = 0 // Stopped in a previous chunk.
+					}
+					break
 				}
-				if index < c.samples {
-					stopAfter = index
-				}
-				break
 			}
 		}
 	}
