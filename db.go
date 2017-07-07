@@ -142,6 +142,8 @@ type DB struct {
 type dbMetrics struct {
 	activeAppenders      prometheus.Gauge
 	loadedBlocks         prometheus.GaugeFunc
+	lowWatermark         prometheus.GaugeFunc
+	highWatermark        prometheus.GaugeFunc
 	reloads              prometheus.Counter
 	reloadsFailed        prometheus.Counter
 	reloadDuration       prometheus.Summary
@@ -163,6 +165,20 @@ func newDBMetrics(db *DB, r prometheus.Registerer) *dbMetrics {
 		db.mtx.RLock()
 		defer db.mtx.RUnlock()
 		return float64(len(db.blocks))
+	})
+	m.lowWatermark = prometheus.NewGaugeFunc(prometheus.GaugeOpts{
+		Name: "tsdb_isolation_low_watermark",
+		Help: "The lowest write id that is still referenced.",
+	}, func() float64 {
+		return float64(db.readLowWatermark())
+	})
+	m.highWatermark = prometheus.NewGaugeFunc(prometheus.GaugeOpts{
+		Name: "tsdb_isolation_high_watermark",
+		Help: "The highest write id that has been given out.",
+	}, func() float64 {
+		db.writeMtx.Lock()
+		defer db.writeMtx.Unlock()
+		return float64(db.writeLastId)
 	})
 	m.reloads = prometheus.NewCounter(prometheus.CounterOpts{
 		Name: "tsdb_reloads_total",
@@ -189,6 +205,8 @@ func newDBMetrics(db *DB, r prometheus.Registerer) *dbMetrics {
 		r.MustRegister(
 			m.activeAppenders,
 			m.loadedBlocks,
+			m.lowWatermark,
+			m.highWatermark,
 			m.reloads,
 			m.reloadsFailed,
 			m.reloadDuration,
