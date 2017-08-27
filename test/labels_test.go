@@ -16,6 +16,8 @@ package test
 import (
 	"bytes"
 	"crypto/rand"
+	"fmt"
+	"sort"
 	"testing"
 
 	"github.com/prometheus/tsdb/labels"
@@ -212,5 +214,46 @@ func BenchmarkStringBytesEquals(b *testing.B) {
 			}
 			_ = r
 		})
+	}
+}
+
+func BenchmarkLabelSetEquals(b *testing.B) {
+	lset := labels.FromStrings(
+		"__name__", "viljjpdisdmychdciattjgryfsxgkinrxuwzkplzqvzydyod",
+		"bvqcfmtc", "qrf",
+		"vgcdywyzlg", "ucafvj",
+		"xlqhwhxrcya", "ztnhtzzrz",
+		"blppopdupk", "ekjyhocpcxjdjzjellddbbnsnzcjkeypnukaasfnxovixglwishggkbyqyrtgeupkpnzmwgdonjftwzxtnajyusbtonsbufoofjbytrykavepew",
+		"pwtdcjrs", "zptcaofazrlcmedddpzseufgpaijfcsjwhorjthvpjs",
+	)
+	b.ResetTimer()
+
+	k := 0
+	for i := 0; i < b.N; i++ {
+		if lset.Equals(lset) {
+			k++
+		}
+	}
+	fmt.Println(k)
+}
+
+func BenchmarkSortLabelSet(b *testing.B) {
+	lset := []labels.Label{
+		{"bvqcfmtc", "qrf"},
+		{"vgcdywyzlg", "ucafvj"},
+		{"xlqhwhxrcya", "ztnhtzzrz"},
+		{"blppopdupk", "ekjyhocpcxjdjzjellddbbnsnzcjkeypnukaasfnxovixglwishggkbyqyrtgeupkpnzmwgdonjftwzxtnajyusbtonsbufoofjbytrykavepew"},
+		{"pwtdcjrs", "zptcaofazrlcmedddpzseufgpaijfcsjwhorjthvpjs"},
+		{"__name__", "viljjpdisdmychdciattjgryfsxgkinrxuwzkplzqvzydyod"},
+	}
+	var input []labels.Labels
+	for i := 0; i < b.N; i++ {
+		input = append(input, append(labels.Labels{}, lset...))
+	}
+	b.ResetTimer()
+	b.ReportAllocs()
+
+	for _, lset := range input {
+		sort.Sort(lset)
 	}
 }

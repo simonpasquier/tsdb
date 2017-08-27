@@ -72,6 +72,46 @@ func (e errPostings) Err() error       { return e.err }
 
 var emptyPostings = errPostings{}
 
+// chainedPostings holds a list of ordered and non-overlapping postings.
+type chainedPostings struct {
+	postings []Postings
+}
+
+func (p *chainedPostings) At() uint32 {
+	return p.postings[0].At()
+}
+
+func (p *chainedPostings) Next() bool {
+	if len(p.postings) == 0 {
+		return false
+	}
+	if p.postings[0].Next() {
+		return true
+	}
+	p.postings = p.postings[1:]
+
+	return p.Next()
+}
+
+func (p *chainedPostings) Seek(id uint32) bool {
+	if len(p.postings) == 0 {
+		return false
+	}
+	if p.postings[0].Seek(id) {
+		return true
+	}
+	p.postings = p.postings[1:]
+
+	return p.Seek(id)
+}
+
+func (p *chainedPostings) Err() error {
+	if len(p.postings) == 0 {
+		return nil
+	}
+	return p.postings[0].Err()
+}
+
 // Intersect returns a new postings list over the intersection of the
 // input postings.
 func Intersect(its ...Postings) Postings {
@@ -327,6 +367,12 @@ func (ss stringset) set(s string) {
 func (ss stringset) has(s string) bool {
 	_, ok := ss[s]
 	return ok
+}
+
+func (ss stringset) merge(other stringset) {
+	for s := range other {
+		ss[s] = struct{}{}
+	}
 }
 
 func (ss stringset) String() string {

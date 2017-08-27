@@ -43,29 +43,9 @@ func openTestHeadBlock(t testing.TB, dir string) *HeadBlock {
 	wal, err := OpenSegmentWAL(dir, nil, 5*time.Second)
 	require.NoError(t, err)
 
-	h, err := OpenHeadBlock(dir, nil, wal, nil)
+	h, err := OpenHeadBlock(dir, nil, nil, wal, nil)
 	require.NoError(t, err)
 	return h
-}
-
-func BenchmarkCreateSeries(b *testing.B) {
-	lbls, err := readPrometheusLabels("cmd/tsdb/testdata.1m", 1e6)
-	require.NoError(b, err)
-
-	b.Run("", func(b *testing.B) {
-		dir, err := ioutil.TempDir("", "create_series_bench")
-		require.NoError(b, err)
-		defer os.RemoveAll(dir)
-
-		h := createTestHeadBlock(b, dir, 0, 1)
-
-		b.ReportAllocs()
-		b.ResetTimer()
-
-		for _, l := range lbls[:b.N] {
-			h.create(l.Hash(), l)
-		}
-	})
 }
 
 func readPrometheusLabels(fn string, n int) ([]labels.Labels, error) {
@@ -111,6 +91,7 @@ func TestAmendDatapointCausesError(t *testing.T) {
 	defer os.RemoveAll(dir)
 
 	hb := createTestHeadBlock(t, dir, 0, 1000)
+	defer hb.Close()
 
 	app := hb.Appender()
 	_, err := app.Add(labels.Labels{}, 0, 0)
@@ -127,6 +108,7 @@ func TestDuplicateNaNDatapointNoAmendError(t *testing.T) {
 	defer os.RemoveAll(dir)
 
 	hb := createTestHeadBlock(t, dir, 0, 1000)
+	defer hb.Close()
 
 	app := hb.Appender()
 	_, err := app.Add(labels.Labels{}, 0, math.NaN())
@@ -143,6 +125,7 @@ func TestNonDuplicateNaNDatapointsCausesAmendError(t *testing.T) {
 	defer os.RemoveAll(dir)
 
 	hb := createTestHeadBlock(t, dir, 0, 1000)
+	defer hb.Close()
 
 	app := hb.Appender()
 	_, err := app.Add(labels.Labels{}, 0, math.Float64frombits(0x7ff0000000000001))
@@ -159,6 +142,7 @@ func TestSkippingInvalidValuesInSameTxn(t *testing.T) {
 	defer os.RemoveAll(dir)
 
 	hb := createTestHeadBlock(t, dir, 0, 1000)
+	defer hb.Close()
 
 	// Append AmendedValue.
 	app := hb.Appender()
@@ -260,6 +244,8 @@ func TestHeadBlock_e2e(t *testing.T) {
 	defer os.RemoveAll(dir)
 
 	hb := createTestHeadBlock(t, dir, minTime, maxTime)
+	defer hb.Close()
+
 	app := hb.Appender()
 
 	for _, l := range lbls {
@@ -389,6 +375,8 @@ func TestHBDeleteSimple(t *testing.T) {
 	defer os.RemoveAll(dir)
 
 	hb := createTestHeadBlock(t, dir, 0, numSamples)
+	defer hb.Close()
+
 	app := hb.Appender()
 
 	smpls := make([]float64, numSamples)
@@ -480,6 +468,8 @@ func TestDeleteUntilCurMax(t *testing.T) {
 	defer os.RemoveAll(dir)
 
 	hb := createTestHeadBlock(t, dir, 0, 2*numSamples)
+	defer hb.Close()
+
 	app := hb.Appender()
 
 	smpls := make([]float64, numSamples)
@@ -565,6 +555,8 @@ func TestDelete_e2e(t *testing.T) {
 	defer os.RemoveAll(dir)
 
 	hb := createTestHeadBlock(t, dir, minTime, maxTime)
+	defer hb.Close()
+
 	app := hb.Appender()
 
 	for _, l := range lbls {

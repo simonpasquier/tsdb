@@ -166,8 +166,8 @@ func (b *writeBenchmark) ingestScrapes(lbls []labels.Labels, scrapeCount int) (u
 		var wg sync.WaitGroup
 		lbls := lbls
 		for len(lbls) > 0 {
-			l := 1000
-			if len(lbls) < 1000 {
+			l := 10000
+			if len(lbls) < 10000 {
 				l = len(lbls)
 			}
 			batch := lbls[:l]

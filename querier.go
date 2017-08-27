@@ -18,6 +18,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/pkg/errors"
 	"github.com/prometheus/tsdb/chunks"
 	"github.com/prometheus/tsdb/labels"
 )
@@ -145,6 +146,7 @@ type blockQuerier struct {
 	index      IndexReader
 	chunks     ChunkReader
 	tombstones TombstoneReader
+	close      func()
 
 	mint, maxt int64
 }
@@ -195,7 +197,16 @@ func (q *blockQuerier) LabelValuesFor(string, labels.Label) ([]string, error) {
 }
 
 func (q *blockQuerier) Close() error {
-	return nil
+	var merr MultiError
+
+	merr.Add(q.index.Close())
+	merr.Add(q.chunks.Close())
+
+	if q.close != nil {
+		q.close()
+	}
+
+	return merr.Err()
 }
 
 // postingsReader is used to select matching postings from an IndexReader.
@@ -454,7 +465,12 @@ func (s *baseChunkSeries) Next() bool {
 Outer:
 	for s.p.Next() {
 		ref := s.p.At()
-		if err := s.index.Series(ref, &lset, &chunks); err != nil {
+		err := s.index.Series(ref, &lset, &chunks)
+
+		// Inverted indices are not isolated, so we might not find a series yet.
+		if errors.Cause(err) == ErrNotFound {
+			continue
+		} else if err != nil {
 			s.err = err
 			return false
 		}

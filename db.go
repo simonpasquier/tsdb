@@ -102,8 +102,9 @@ type DB struct {
 	chunkPool chunks.Pool
 
 	// Mutex for that must be held when modifying the general block layout.
-	mtx    sync.RWMutex
-	blocks []Block
+	mtx       sync.RWMutex
+	blocks    []Block
+	isolation *Isolation
 
 	// Mutex that must be held when modifying just the head blocks
 	// or the general layout.
@@ -201,6 +202,7 @@ func Open(dir string, l log.Logger, r prometheus.Registerer, opts *Options) (db 
 		dir:                dir,
 		logger:             l,
 		opts:               opts,
+		isolation:          NewIsolation(),
 		compactc:           make(chan struct{}, 1),
 		donec:              make(chan struct{}),
 		stopc:              make(chan struct{}),
@@ -880,7 +882,7 @@ func (db *DB) openHeadBlock(dir string) (*HeadBlock, error) {
 		return nil, errors.Wrapf(err, "open WAL %s", dir)
 	}
 
-	h, err := OpenHeadBlock(dir, log.With(db.logger, "block", dir), wal, db.compactor)
+	h, err := OpenHeadBlock(dir, log.With(db.logger, "block", dir), db.isolation, wal, db.compactor)
 	if err != nil {
 		return nil, errors.Wrapf(err, "open head block %s", dir)
 	}
@@ -977,6 +979,100 @@ func nextSequenceFile(dir, prefix string) (string, int, error) {
 		i = j
 	}
 	return filepath.Join(dir, fmt.Sprintf("%s%0.6d", prefix, i+1)), int(i + 1), nil
+}
+
+// Isolation holds state about database revisions and tracks active readers
+// and writers against them.
+type Isolation struct {
+	mtx           sync.Mutex
+	id            uint64              // highest revision
+	minRead       uint64              // inclusive revision below which are no pending reads
+	maxWrite      uint64              // inclusive revision up to which there are no pending writes
+	pendingWrites map[uint64]struct{} // all pending write revisions (they are singletons)
+	pendingReads  map[uint64]uint32   // pending read revisions and their number of readers
+}
+
+// NewIsolation returns a new Isolation.
+func NewIsolation() *Isolation {
+	return &Isolation{
+		pendingWrites: map[uint64]struct{}{},
+		pendingReads:  map[uint64]uint32{},
+	}
+}
+
+// StartWrite returns the next revision and the minimum revision that is still
+// being read at.
+func (i *Isolation) StartWrite() (cur uint64, minRead uint64) {
+	i.mtx.Lock()
+	defer i.mtx.Unlock()
+
+	i.id++
+	i.pendingWrites[i.id] = struct{}{}
+
+	return i.id, i.minRead
+}
+
+// WriteDone marks the write at revision rev as completed.
+func (i *Isolation) WriteDone(rev uint64) {
+	i.mtx.Lock()
+	defer i.mtx.Unlock()
+
+	delete(i.pendingWrites, rev)
+
+	// Completed revision is not the oldest one. No update of minWrite needed.
+	if rev > i.maxWrite+1 {
+		return
+	}
+	// The completed write was the lowest one. Update the highest revision to which
+	// inclusively all writes completed.
+	i.maxWrite = i.id
+	for x := range i.pendingWrites {
+		if x < i.maxWrite {
+			i.maxWrite = x - 1
+		}
+	}
+
+	// If there are no pending reads, bump the minimum read revision.
+	if len(i.pendingReads) == 0 {
+		i.minRead = i.maxWrite
+	}
+}
+
+// StartRead returns the newest revision that is safe be to be read at.
+// ReadDone must be called with it once the read is completed.
+func (i *Isolation) StartRead() uint64 {
+	i.mtx.Lock()
+	defer i.mtx.Unlock()
+
+	i.pendingReads[i.maxWrite]++
+
+	return i.maxWrite
+}
+
+// ReadDone marks a started read at revision rev as completed.
+func (i *Isolation) ReadDone(rev uint64) {
+	i.mtx.Lock()
+	defer i.mtx.Unlock()
+
+	if i.pendingReads[rev] > 1 {
+		i.pendingReads[rev]--
+		return
+	}
+	delete(i.pendingReads, rev)
+
+	// Completed revision is not the oldest pending one – no update.
+	if rev > i.minRead+1 {
+		return
+	}
+
+	// Lowest read was completed, update minRead.
+	minr := i.maxWrite
+	for x := range i.pendingReads {
+		if x < minr {
+			minr = x - 1
+		}
+	}
+	i.minRead = minr
 }
 
 // The MultiError type implements the error interface, and contains the

@@ -56,24 +56,24 @@ func TestDataAvailableOnlyAfterCommit(t *testing.T) {
 	defer db.Close()
 
 	app := db.Appender()
-	_, err = app.Add(labels.FromStrings("foo", "bar"), 0, 0)
+	_, err = app.Add(labels.FromStrings("foo", "bar"), 123, 456)
 	require.NoError(t, err)
 
-	querier := db.Querier(0, 1)
+	querier := db.Querier(122, 123)
 	seriesSet, err := readSeriesSet(querier.Select(labels.NewEqualMatcher("foo", "bar")))
 	require.NoError(t, err)
-	require.Equal(t, seriesSet, map[string][]sample{})
+	require.Equal(t, map[string][]sample{}, seriesSet)
 	require.NoError(t, querier.Close())
 
 	err = app.Commit()
 	require.NoError(t, err)
 
-	querier = db.Querier(0, 1)
+	querier = db.Querier(122, 123)
 	defer querier.Close()
 
 	seriesSet, err = readSeriesSet(querier.Select(labels.NewEqualMatcher("foo", "bar")))
 	require.NoError(t, err)
-	require.Equal(t, seriesSet, map[string][]sample{`{foo="bar"}`: []sample{{t: 0, v: 0}}})
+	require.Equal(t, map[string][]sample{`{foo="bar"}`: []sample{{t: 123, v: 456}}}, seriesSet)
 }
 
 func TestDataNotAvailableAfterRollback(t *testing.T) {
