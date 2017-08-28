@@ -14,7 +14,9 @@
 package tsdb
 
 import (
+	"crypto/sha256"
 	"fmt"
+	"hash"
 	"math"
 	"math/rand"
 	"os"
@@ -59,18 +61,10 @@ type HeadBlock struct {
 
 	activeWriters uint64
 	highTimestamp int64
-	closed        bool
+	lastSeriesID  uint32
 
-	// descs holds all chunk descs for the head block. Each chunk implicitly
-	// is assigned the index as its ID.
-	series []*memSeries
-	// hashes contains a collision map of label set hashes of chunks
-	// to their chunk descs.
-	hashes map[uint64][]*memSeries
-
-	symbols  map[string]struct{}
-	values   map[string]stringset // label names to possible values
-	postings *memPostings         // postings lists for terms
+	index *memIndexLSM
+	stopc chan struct{}
 
 	tombstones tombstoneReader
 
@@ -112,62 +106,62 @@ func OpenHeadBlock(dir string, l log.Logger, wal WAL, c Compactor) (*HeadBlock, 
 	if err != nil {
 		return nil, err
 	}
+	stopc := make(chan struct{})
 
 	h := &HeadBlock{
 		dir:        dir,
 		wal:        wal,
 		compactor:  c,
-		series:     []*memSeries{nil}, // 0 is not a valid posting, filled with nil.
-		hashes:     map[uint64][]*memSeries{},
-		values:     map[string]stringset{},
-		symbols:    map[string]struct{}{},
-		postings:   &memPostings{m: make(map[term][]uint32)},
+		index:      newMemIndexLSM(stopc),
 		meta:       *meta,
 		tombstones: newEmptyTombstoneReader(),
+		stopc:      stopc,
 	}
 	return h, h.init()
 }
 
 func (h *HeadBlock) init() error {
-	r := h.wal.Reader()
+	// r := h.wal.Reader()
 
-	seriesFunc := func(series []labels.Labels) error {
-		for _, lset := range series {
-			h.create(lset.Hash(), lset)
-			h.meta.Stats.NumSeries++
-		}
+	// index := h.indexReader()
 
-		return nil
-	}
-	samplesFunc := func(samples []RefSample) error {
-		for _, s := range samples {
-			if int(s.Ref) >= len(h.series) {
-				return errors.Errorf("unknown series reference %d (max %d); abort WAL restore",
-					s.Ref, len(h.series))
-			}
-			h.series[s.Ref].append(s.T, s.V)
+	// seriesFunc := func(series []labels.Labels) error {
+	// 	for _, lset := range series {
+	// 		h.create(lset.Hash(), lset)
+	// 		h.meta.Stats.NumSeries++
+	// 	}
 
-			if !h.inBounds(s.T) {
-				return errors.Wrap(ErrOutOfBounds, "consume WAL")
-			}
-			h.meta.Stats.NumSamples++
-		}
+	// 	return nil
+	// }
+	// samplesFunc := func(samples []RefSample) error {
+	// 	for _, s := range samples {
+	// 		series, ok := index.seriesByID(uint32(s.Ref))
+	// 		if !ok {
+	// 			return errors.Wrapf(ErrNotFound, "unknown series ID %d; abort WAL restore", s.Ref)
+	// 		}
+	// 		h.series[s.Ref].append(s.T, s.V)
 
-		return nil
-	}
-	deletesFunc := func(stones []Stone) error {
-		for _, s := range stones {
-			for _, itv := range s.intervals {
-				h.tombstones.add(s.ref, itv)
-			}
-		}
+	// 		if !h.inBounds(s.T) {
+	// 			return errors.Wrap(ErrOutOfBounds, "consume WAL")
+	// 		}
+	// 		h.meta.Stats.NumSamples++
+	// 	}
 
-		return nil
-	}
+	// 	return nil
+	// }
+	// deletesFunc := func(stones []Stone) error {
+	// 	for _, s := range stones {
+	// 		for _, itv := range s.intervals {
+	// 			h.tombstones.add(s.ref, itv)
+	// 		}
+	// 	}
 
-	if err := r.Read(seriesFunc, samplesFunc, deletesFunc); err != nil {
-		return errors.Wrap(err, "consume WAL")
-	}
+	// 	return nil
+	// }
+
+	// if err := r.Read(seriesFunc, samplesFunc, deletesFunc); err != nil {
+	// 	return errors.Wrap(err, "consume WAL")
+	// }
 
 	return nil
 }
@@ -184,8 +178,12 @@ func (h *HeadBlock) String() string {
 
 // Close syncs all data and closes underlying resources of the head block.
 func (h *HeadBlock) Close() error {
-	h.mtx.Lock()
-	defer h.mtx.Unlock()
+	select {
+	case <-h.stopc:
+		return errors.Errorf("already closed")
+	default:
+	}
+	close(h.stopc)
 
 	if err := h.wal.Close(); err != nil {
 		return errors.Wrapf(err, "close WAL for head %s", h.dir)
@@ -202,8 +200,6 @@ func (h *HeadBlock) Close() error {
 	if meta.ULID == h.meta.ULID {
 		return writeMetaFile(h.dir, &h.meta)
 	}
-
-	h.closed = true
 	return nil
 }
 
@@ -230,7 +226,7 @@ func (h *HeadBlock) Tombstones() TombstoneReader {
 
 // Delete implements headBlock.
 func (h *HeadBlock) Delete(mint int64, maxt int64, ms ...labels.Matcher) error {
-	ir := h.Index()
+	ir := h.indexReader()
 
 	pr := newPostingsReader(ir)
 	p, absent := pr.Select(ms...)
@@ -240,15 +236,19 @@ func (h *HeadBlock) Delete(mint int64, maxt int64, ms ...labels.Matcher) error {
 Outer:
 	for p.Next() {
 		ref := p.At()
-		lset := h.series[ref].lset
+
+		s, ok := ir.seriesByID(ref)
+		if !ok {
+			return errors.Wrapf(ErrNotFound, "invalid series ID %d in postings", ref)
+		}
 		for _, abs := range absent {
-			if lset.Get(abs) != "" {
+			if s.lset.Get(abs) != "" {
 				continue Outer
 			}
 		}
 
 		// Delete only until the current values and not beyond.
-		tmin, tmax := clampInterval(mint, maxt, h.series[ref].chunks[0].minTime, h.series[ref].head().maxTime)
+		tmin, tmax := clampInterval(mint, maxt, s.chunks[0].minTime, s.head().maxTime)
 		stones = append(stones, Stone{ref, Intervals{{tmin, tmax}}})
 	}
 
@@ -283,27 +283,39 @@ func (h *HeadBlock) Dir() string { return h.dir }
 
 // Index returns an IndexReader against the block.
 func (h *HeadBlock) Index() IndexReader {
-	h.mtx.RLock()
-	defer h.mtx.RUnlock()
+	select {
+	case <-h.stopc:
+		panic(fmt.Sprintf("block %s already closed", h.dir))
+	default:
+	}
 
-	return &headIndexReader{HeadBlock: h, maxSeries: uint32(len(h.series) - 1)}
+	return h.indexReader()
+}
+
+func (h *HeadBlock) indexReader() *headIndexReader {
+	return &headIndexReader{
+		block:   h,
+		indices: h.index.all(),
+	}
 }
 
 // Chunks returns a ChunkReader against the block.
-func (h *HeadBlock) Chunks() ChunkReader { return &headChunkReader{h} }
+func (h *HeadBlock) Chunks() ChunkReader {
+	return &headChunkReader{block: h, index: h.indexReader()}
+}
 
 // Querier returns a new Querier against the block for the range [mint, maxt].
 func (h *HeadBlock) Querier(mint, maxt int64) Querier {
-	h.mtx.RLock()
-	if h.closed {
+	select {
+	case <-h.stopc:
 		panic(fmt.Sprintf("block %s already closed", h.dir))
+	default:
 	}
-	h.mtx.RUnlock()
 
 	return &blockQuerier{
 		mint:       mint,
 		maxt:       maxt,
-		index:      h.Index(),
+		index:      h.indexReader(),
 		chunks:     h.Chunks(),
 		tombstones: h.Tombstones(),
 	}
@@ -311,14 +323,18 @@ func (h *HeadBlock) Querier(mint, maxt int64) Querier {
 
 // Appender returns a new Appender against the head block.
 func (h *HeadBlock) Appender() Appender {
+	select {
+	case <-h.stopc:
+		panic(fmt.Sprintf("block %s already closed", h.dir))
+	default:
+	}
 	atomic.AddUint64(&h.activeWriters, 1)
 
-	h.mtx.RLock()
-
-	if h.closed {
-		panic(fmt.Sprintf("block %s already closed", h.dir))
+	return &headAppender{
+		block:   h,
+		samples: getHeadAppendBuffer(),
+		index:   h.indexReader(),
 	}
-	return &headAppender{HeadBlock: h, samples: getHeadAppendBuffer()}
 }
 
 // ActiveWriters returns true if the block has open write transactions.
@@ -346,32 +362,53 @@ func putHeadAppendBuffer(b []RefSample) {
 }
 
 type headAppender struct {
-	*HeadBlock
+	block  *HeadBlock
+	hasher hash.Hash
+	index  *headIndexReader
 
 	newSeries []*hashedLabels
-	newLabels []labels.Labels
-	newHashes map[uint64]uint64
+	newHashes map[seriesHash]uint64
 
 	samples       []RefSample
 	highTimestamp int64
 }
 
+type seriesHash [sha256.Size]byte
+
 type hashedLabels struct {
 	ref    uint64
-	hash   uint64
+	hash   seriesHash
 	labels labels.Labels
 }
 
+func hashLabels(h hash.Hash, lset labels.Labels, b []byte) {
+	h.Reset()
+
+	for i, l := range lset {
+		if i != 0 {
+			h.Write([]byte{'\xff'})
+		}
+		h.Write(yoloBytes(l.Name))
+		h.Write([]byte{'\xff'})
+		h.Write(yoloBytes(l.Value))
+	}
+	h.Sum(b)
+}
+
 func (a *headAppender) Add(lset labels.Labels, t int64, v float64) (string, error) {
-	if !a.inBounds(t) {
+	if !a.block.inBounds(t) {
 		return "", ErrOutOfBounds
 	}
+	if a.hasher == nil {
+		a.hasher = sha256.New()
+	}
+	var hash seriesHash
+	hashLabels(a.hasher, lset, hash[:0])
 
-	hash := lset.Hash()
 	refb := make([]byte, 8)
 
 	// Series exists already in the block.
-	if ms := a.get(hash, lset); ms != nil {
+	if ms, ok := a.index.seriesByHash(hash); ok {
 		binary.BigEndian.PutUint64(refb, uint64(ms.ref))
 		return string(refb), a.AddFast(string(refb), t, v)
 	}
@@ -386,7 +423,7 @@ func (a *headAppender) Add(lset labels.Labels, t int64, v float64) (string, erro
 
 	// The series is completely new.
 	if a.newSeries == nil {
-		a.newHashes = map[uint64]uint64{}
+		a.newHashes = map[seriesHash]uint64{}
 	}
 	// First sample for new series.
 	ref := uint64(len(a.newSeries))
@@ -411,31 +448,30 @@ func (a *headAppender) AddFast(ref string, t int64, v float64) error {
 	}
 	var (
 		refn = binary.BigEndian.Uint64(yoloBytes(ref))
-		id   = (refn << 1) >> 1
+		id   = uint32(refn)
 		inTx = refn&(1<<63) != 0
 	)
 	// Distinguish between existing series and series created in
 	// this transaction.
 	if inTx {
-		if id > uint64(len(a.newSeries)-1) {
+		if id > uint32(len(a.newSeries)-1) {
 			return errors.Wrap(ErrNotFound, "transaction series ID too high")
 		}
 		// TODO(fabxc): we also have to validate here that the
 		// sample sequence is valid.
 		// We also have to revalidate it as we switch locks and create
 		// the new series.
-	} else if id > uint64(len(a.series)) {
-		return errors.Wrap(ErrNotFound, "transaction series ID too high")
 	} else {
-		ms := a.series[id]
-		if ms == nil {
-			return errors.Wrap(ErrNotFound, "nil series")
+		ms, ok := a.index.seriesByID(id)
+		if !ok {
+			return errors.Wrapf(ErrNotFound, "invalid series ID %d", id)
 		}
+
 		// TODO(fabxc): memory series should be locked here already.
 		// Only problem is release of locks in case of a rollback.
 		c := ms.head()
 
-		if !a.inBounds(t) {
+		if !a.block.inBounds(t) {
 			return ErrOutOfBounds
 		}
 		if t < c.maxTime {
@@ -465,44 +501,36 @@ func (a *headAppender) createSeries() error {
 	if len(a.newSeries) == 0 {
 		return nil
 	}
-	a.newLabels = make([]labels.Labels, 0, len(a.newSeries))
-	base0 := len(a.series)
 
-	a.mtx.RUnlock()
-	defer a.mtx.RLock()
-	a.mtx.Lock()
-	defer a.mtx.Unlock()
+	ix := a.block.index.newChild(len(a.newSeries))
+	newLabels := make([]labels.Labels, 0, len(a.newSeries))
 
-	base1 := len(a.series)
-
-	for _, l := range a.newSeries {
-		// We switched locks and have to re-validate that the series were not
-		// created by another goroutine in the meantime.
-		if base1 > base0 {
-			if ms := a.get(l.hash, l.labels); ms != nil {
-				l.ref = uint64(ms.ref)
-				continue
-			}
+	for _, hl := range a.newSeries {
+		// We are adding to a version of the index that may be outdated. Concurrent
+		// appenders may therefore create the same series multiple times.
+		// This is repaired for on read and compaction of the index.
+		id := atomic.AddUint32(&a.block.lastSeriesID, 1)
+		// If incrementing brought us back to 0, we exceeded the uint32.
+		if id == 0 {
+			panic("series ID overflow")
 		}
-		// Series is still new.
-		a.newLabels = append(a.newLabels, l.labels)
-		l.ref = uint64(len(a.series))
+		hl.ref = uint64(id)
 
-		a.create(l.hash, l.labels)
+		s := newMemSeries(hl.labels, id, a.block.meta.MaxTime)
+		ix.add(id, hl.hash, s)
 	}
 
-	// Write all new series to the WAL.
-	if err := a.wal.LogSeries(a.newLabels); err != nil {
+	if err := a.block.wal.LogSeries(newLabels); err != nil {
 		return errors.Wrap(err, "WAL log series")
 	}
+
+	a.block.index.add(ix)
 
 	return nil
 }
 
 func (a *headAppender) Commit() error {
-	defer atomic.AddUint64(&a.activeWriters, ^uint64(0))
-	defer putHeadAppendBuffer(a.samples)
-	defer a.mtx.RUnlock()
+	defer a.Rollback()
 
 	if err := a.createSeries(); err != nil {
 		return err
@@ -518,27 +546,40 @@ func (a *headAppender) Commit() error {
 
 	// Write all new samples to the WAL and add them to the
 	// in-mem database on success.
-	if err := a.wal.LogSamples(a.samples); err != nil {
+	if err := a.block.wal.LogSamples(a.samples); err != nil {
 		return errors.Wrap(err, "WAL log samples")
 	}
+
+	// Our writes to the series index may have been dirty. Get a fresh version
+	// to write the final samples to the correct series.
+	//
+	// TODO(fabxc): out-of-order checks on Add() may no longer be valid. Once we
+	// have isolation, CAS the write revision into each series and just let the commit
+	// fail if the series does not hold our revision?
+	// We generally think overlapping appenders are misbehaving clients.
+	a.index = a.block.indexReader()
 
 	total := uint64(len(a.samples))
 
 	for _, s := range a.samples {
-		if !a.series[s.Ref].append(s.T, s.V) {
+		series, ok := a.index.seriesByID(uint32(s.Ref))
+		if !ok {
+			return errors.Errorf("series with ID %d not found", s.Ref)
+		}
+		if !series.append(s.T, s.V) {
 			total--
 		}
 	}
 
-	atomic.AddUint64(&a.meta.Stats.NumSamples, total)
-	atomic.AddUint64(&a.meta.Stats.NumSeries, uint64(len(a.newSeries)))
+	atomic.AddUint64(&a.block.meta.Stats.NumSamples, total)
+	atomic.AddUint64(&a.block.meta.Stats.NumSeries, uint64(len(a.newSeries)))
 
 	for {
-		ht := a.HeadBlock.HighTimestamp()
+		ht := a.block.HighTimestamp()
 		if a.highTimestamp <= ht {
 			break
 		}
-		if atomic.CompareAndSwapInt64(&a.HeadBlock.highTimestamp, ht, a.highTimestamp) {
+		if atomic.CompareAndSwapInt64(&a.block.highTimestamp, ht, a.highTimestamp) {
 			break
 		}
 	}
@@ -547,30 +588,36 @@ func (a *headAppender) Commit() error {
 }
 
 func (a *headAppender) Rollback() error {
-	a.mtx.RUnlock()
-	atomic.AddUint64(&a.activeWriters, ^uint64(0))
+	atomic.AddUint64(&a.block.activeWriters, ^uint64(0))
 	putHeadAppendBuffer(a.samples)
 	return nil
 }
 
 type headChunkReader struct {
-	*HeadBlock
+	block *HeadBlock
+	index *headIndexReader
 }
 
 // Chunk returns the chunk for the reference number.
 func (h *headChunkReader) Chunk(ref uint64) (chunks.Chunk, error) {
-	h.mtx.RLock()
-	defer h.mtx.RUnlock()
+	sid := uint32(ref >> 32)
+	cid := uint32(ref)
 
-	si := ref >> 32
-	ci := (ref << 32) >> 32
+	series, ok := h.index.seriesByID(sid)
+	if !ok {
+		return nil, errors.Errorf("series with ID %d not found", sid)
+	}
 
 	c := &safeChunk{
-		Chunk: h.series[si].chunks[ci].chunk,
-		s:     h.series[si],
-		i:     int(ci),
+		Chunk: series.chunks[cid].chunk,
+		s:     series,
+		i:     int(cid),
 	}
 	return c, nil
+}
+
+func (h *headChunkReader) Close() error {
+	return nil
 }
 
 type safeChunk struct {
@@ -590,76 +637,100 @@ func (c *safeChunk) Iterator() chunks.Iterator {
 // func (c *safeChunk) Encoding() chunks.Encoding          { panic("illegal") }
 
 type headIndexReader struct {
-	*HeadBlock
+	block   *HeadBlock
+	indices []*memIndex
 	// Highest series that existed when the index reader was instantiated.
-	maxSeries uint32
+	// maxSeries uint32
 }
 
-func (h *headIndexReader) Symbols() (map[string]struct{}, error) {
-	return h.symbols, nil
+func (r *headIndexReader) Close() error {
+	return nil
+}
+
+func (r *headIndexReader) Symbols() (map[string]struct{}, error) {
+	m := map[string]struct{}{}
+
+	for _, c := range r.indices {
+		for s := range c.symbols {
+			m[s] = struct{}{}
+		}
+	}
+	return m, nil
 }
 
 // LabelValues returns the possible label values
-func (h *headIndexReader) LabelValues(names ...string) (StringTuples, error) {
-	h.mtx.RLock()
-	defer h.mtx.RUnlock()
-
+func (r *headIndexReader) LabelValues(names ...string) (StringTuples, error) {
 	if len(names) != 1 {
 		return nil, errInvalidSize
 	}
-	var sl []string
+	name := names[0]
+	m := make(map[string]struct{})
 
-	for s := range h.values[names[0]] {
-		sl = append(sl, s)
+	for _, c := range r.indices {
+		for s := range c.values[name] {
+			m[s] = struct{}{}
+		}
 	}
-	sort.Strings(sl)
 
-	return &stringTuples{l: len(names), s: sl}, nil
+	vals := make([]string, 0, len(m))
+	for s := range m {
+		vals = append(vals, s)
+	}
+	sort.Strings(vals)
+
+	return &stringTuples{l: 1, s: vals}, nil
 }
 
 // Postings returns the postings list iterator for the label pair.
-func (h *headIndexReader) Postings(name, value string) (Postings, error) {
-	h.mtx.RLock()
-	defer h.mtx.RUnlock()
+func (r *headIndexReader) Postings(name, value string) (Postings, error) {
+	all := make([]Postings, 0, len(r.indices))
 
-	return h.postings.get(term{name: name, value: value}), nil
+	for _, c := range r.indices {
+		all = append(all, c.postings.get(term{name, value}))
+	}
+
+	return &chainedPostings{postings: all}, nil
 }
 
-func (h *headIndexReader) SortedPostings(p Postings) Postings {
-	h.mtx.RLock()
-	defer h.mtx.RUnlock()
-
-	ep := make([]uint32, 0, 1024)
+func (r *headIndexReader) SortedPostings(p Postings) Postings {
+	ep := make([]uint32, 0, 256)
 
 	for p.Next() {
-		// Skip posting entries that include series added after we
-		// instantiated the index reader.
-		if p.At() > h.maxSeries {
-			break
-		}
 		ep = append(ep, p.At())
 	}
 	if err := p.Err(); err != nil {
 		return errPostings{err: errors.Wrap(err, "expand postings")}
 	}
 
+	var err error
+
 	sort.Slice(ep, func(i, j int) bool {
-		return labels.Compare(h.series[ep[i]].lset, h.series[ep[j]].lset) < 0
+		if err != nil {
+			return false
+		}
+		a, ok1 := r.seriesByID(ep[i])
+		b, ok2 := r.seriesByID(ep[j])
+
+		if !ok1 || !ok2 {
+			err = errors.Errorf("invalid series ID in postings")
+			return false
+		}
+		return labels.Compare(a.lset, b.lset) < 0
 	})
+	if err != nil {
+		return errPostings{err: err}
+	}
 	return newListPostings(ep)
 }
 
 // Series returns the series for the given reference.
-func (h *headIndexReader) Series(ref uint32, lbls *labels.Labels, chks *[]ChunkMeta) error {
-	h.mtx.RLock()
-	defer h.mtx.RUnlock()
+func (r *headIndexReader) Series(ref uint32, lbls *labels.Labels, chks *[]ChunkMeta) error {
+	// if ref > r.maxSeries {
+	// 	return ErrNotFound
+	// }
 
-	if ref > h.maxSeries {
-		return ErrNotFound
-	}
-
-	s := h.series[ref]
-	if s == nil {
+	s, ok := r.seriesByID(ref)
+	if !ok {
 		return ErrNotFound
 	}
 	*lbls = append((*lbls)[:0], s.lset...)
@@ -680,56 +751,44 @@ func (h *headIndexReader) Series(ref uint32, lbls *labels.Labels, chks *[]ChunkM
 	return nil
 }
 
-func (h *headIndexReader) LabelIndices() ([][]string, error) {
-	h.mtx.RLock()
-	defer h.mtx.RUnlock()
+func (r *headIndexReader) LabelIndices() ([][]string, error) {
+	m := map[string]struct{}{}
 
-	res := [][]string{}
-
-	for s := range h.values {
-		res = append(res, []string{s})
-	}
-	return res, nil
-}
-
-// get retrieves the chunk with the hash and label set and creates
-// a new one if it doesn't exist yet.
-func (h *HeadBlock) get(hash uint64, lset labels.Labels) *memSeries {
-	series := h.hashes[hash]
-
-	for _, s := range series {
-		if s.lset.Equals(lset) {
-			return s
+	for _, c := range r.indices {
+		for s := range c.values {
+			m[s] = struct{}{}
 		}
 	}
-	return nil
+
+	names := make([][]string, 0, len(m))
+	for s := range m {
+		names = append(names, []string{s})
+	}
+	sort.Slice(names, func(i, j int) bool {
+		return names[i][0] < names[j][0]
+	})
+
+	return names, nil
 }
 
-func (h *HeadBlock) create(hash uint64, lset labels.Labels) *memSeries {
-	s := newMemSeries(lset, uint32(len(h.series)), h.meta.MaxTime)
-
-	// Allocate empty space until we can insert at the given index.
-	h.series = append(h.series, s)
-
-	h.hashes[hash] = append(h.hashes[hash], s)
-
-	for _, l := range lset {
-		valset, ok := h.values[l.Name]
-		if !ok {
-			valset = stringset{}
-			h.values[l.Name] = valset
+func (r *headIndexReader) seriesByHash(hash seriesHash) (*memSeries, bool) {
+	// Series with the same hash/identity may be created twice with concurrent appenders.
+	// The oldest created one is always the correct one to return.
+	for _, ix := range r.indices {
+		if s, ok := ix.seriesByHash[hash]; ok {
+			return s, true
 		}
-		valset.set(l.Value)
-
-		h.postings.add(s.ref, term{name: l.Name, value: l.Value})
-
-		h.symbols[l.Name] = struct{}{}
-		h.symbols[l.Value] = struct{}{}
 	}
+	return nil, false
+}
 
-	h.postings.add(s.ref, term{})
-
-	return s
+func (r *headIndexReader) seriesByID(id uint32) (*memSeries, bool) {
+	for _, ix := range r.indices {
+		if s, ok := ix.seriesByID[id]; ok {
+			return s, true
+		}
+	}
+	return nil, false
 }
 
 type sample struct {
@@ -877,4 +936,176 @@ func (it *memSafeIterator) At() (int64, float64) {
 	}
 	s := it.buf[4-(it.total-it.i)]
 	return s.t, s.v
+}
+
+type memIndexLSM struct {
+	mtx      sync.RWMutex
+	children []*memIndex
+	signal   chan struct{}
+}
+
+func newMemIndexLSM(done <-chan struct{}) *memIndexLSM {
+	ix := &memIndexLSM{signal: make(chan struct{})}
+	go ix.run(done)
+	return ix
+}
+
+func (iv *memIndexLSM) run(done <-chan struct{}) {
+	for {
+		select {
+		case <-done:
+			return
+		case <-iv.signal:
+			iv.merge()
+		}
+	}
+}
+
+func (iv *memIndexLSM) all() []*memIndex {
+	iv.mtx.RLock()
+	defer iv.mtx.RUnlock()
+	return iv.children[:]
+}
+
+// merge compacts any existing children
+func (iv *memIndexLSM) merge() {
+	children := iv.all()
+	k := len(children)
+
+	if k < 2 {
+		return
+	}
+	// Create new swap index with the current state that we can merge updates into.
+	prim := children[0]
+	swap := newMemIndex(len(prim.seriesByID))
+
+	for s := range prim.symbols {
+		swap.symbols[s] = struct{}{}
+	}
+	for h, s := range prim.seriesByHash {
+		swap.seriesByHash[h] = s
+	}
+	for id, s := range prim.seriesByID {
+		swap.seriesByID[id] = s
+	}
+	for t, ids := range prim.postings.m {
+		swap.postings.m[t] = ids
+	}
+	for name, vals := range prim.values {
+		x := make(stringset, len(vals))
+		x.merge(vals)
+		swap.values[name] = x
+	}
+
+	// Compact children into inactive swap index.
+	for _, c := range children[1:] {
+		for s := range c.symbols {
+			swap.symbols[s] = struct{}{}
+		}
+
+		for h, s := range c.seriesByHash {
+			swap.seriesByHash[h] = s
+		}
+		for id, s := range c.seriesByID {
+			swap.seriesByID[id] = s
+		}
+
+		// Existing IDs are sequential and non-overlapping across children postings.
+		for t, ids := range c.postings.m {
+			swap.postings.m[t] = append(swap.postings.m[t], ids...)
+		}
+
+		for name, vals := range c.values {
+			ss, ok := swap.values[name]
+			if !ok {
+				ss = make(stringset, len(vals))
+				swap.values[name] = ss
+			}
+			ss.merge(vals)
+		}
+	}
+
+	// Remove compacted children and make swap index the primary.
+	iv.mtx.Lock()
+	repl := make([]*memIndex, 0, len(iv.children[k:])+1)
+	repl = append(repl, swap)
+	repl = append(repl, iv.children[k:]...)
+
+	iv.children = repl
+	iv.mtx.Unlock()
+}
+
+func (iv *memIndexLSM) newChild(sz int) *memIndex {
+	return newMemIndex(sz)
+}
+
+func (iv *memIndexLSM) add(child *memIndex) {
+	iv.mtx.Lock()
+	iv.children = append(iv.children, child)
+	iv.mtx.Unlock()
+
+	select {
+	case iv.signal <- struct{}{}:
+	default:
+	}
+}
+
+type memIndex struct {
+	symbols      map[string]struct{}
+	seriesByID   map[uint32]*memSeries
+	seriesByHash map[seriesHash]*memSeries
+	postings     *memPostings
+	values       map[string]stringset
+}
+
+func newMemIndex(sz int) *memIndex {
+	return &memIndex{
+		symbols:      map[string]struct{}{},
+		seriesByID:   make(map[uint32]*memSeries, sz),
+		seriesByHash: make(map[seriesHash]*memSeries, sz),
+		postings:     &memPostings{m: map[term][]uint32{}},
+		values:       map[string]stringset{},
+	}
+}
+
+func (ix *memIndex) reset() {
+	for s := range ix.symbols {
+		delete(ix.symbols, s)
+	}
+	for h := range ix.seriesByHash {
+		delete(ix.seriesByHash, h)
+	}
+	for id := range ix.seriesByID {
+		delete(ix.seriesByID, id)
+	}
+	for t, l := range ix.postings.m {
+		ix.postings.m[t] = l[:0]
+	}
+	for _, ss := range ix.values {
+		for s := range ss {
+			delete(ss, s)
+		}
+	}
+}
+
+func (ix *memIndex) add(id uint32, hash seriesHash, s *memSeries) {
+	ix.seriesByID[id] = s
+	ix.seriesByHash[hash] = s
+
+	for _, l := range s.lset {
+		valset, ok := ix.values[l.Name]
+		if !ok {
+			valset = stringset{}
+			ix.values[l.Name] = valset
+		}
+		valset.set(l.Value)
+
+		ix.postings.add(id, term{name: l.Name, value: l.Value})
+
+		ix.symbols[l.Name] = struct{}{}
+		ix.symbols[l.Value] = struct{}{}
+	}
+
+	// The postings list of the empty term holds all series.
+	ix.postings.add(id, term{})
 }

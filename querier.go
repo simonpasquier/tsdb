@@ -195,7 +195,12 @@ func (q *blockQuerier) LabelValuesFor(string, labels.Label) ([]string, error) {
 }
 
 func (q *blockQuerier) Close() error {
-	return nil
+	var merr MultiError
+
+	merr.Add(q.index.Close())
+	merr.Add(q.chunks.Close())
+
+	return merr.Err()
 }
 
 // postingsReader is used to select matching postings from an IndexReader.
