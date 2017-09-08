@@ -565,14 +565,6 @@ func (c *LeveledCompactor) populateBlock(blocks []BlockReader, meta *BlockMeta, 
 			return errors.Wrap(err, "write postings")
 		}
 	}
-	// Write a postings list containing all series.
-	all := make([]uint64, i)
-	for i := range all {
-		all[i] = uint64(i)
-	}
-	if err := indexw.WritePostings("", "", newListPostings(all)); err != nil {
-		return errors.Wrap(err, "write 'all' postings")
-	}
 
 	return nil
 }
