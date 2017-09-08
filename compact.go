@@ -17,7 +17,6 @@ import (
 	"math/rand"
 	"os"
 	"path/filepath"
-	"runtime"
 	"sort"
 	"time"
 
@@ -365,10 +364,6 @@ func (c *LeveledCompactor) write(dest string, meta *BlockMeta, blocks ...BlockRe
 		}
 		c.metrics.ran.Inc()
 		c.metrics.duration.Observe(time.Since(t).Seconds())
-
-		// We might have done quite a few allocs. Enforce a GC so they do not accumulate
-		// with subsequent compactions or head GCs.
-		runtime.GC()
 	}(time.Now())
 
 	dir := filepath.Join(dest, meta.ULID.String())

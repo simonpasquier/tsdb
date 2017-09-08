@@ -15,7 +15,6 @@ package tsdb
 
 import (
 	"math"
-	"runtime"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -514,8 +513,6 @@ Outer:
 
 // gc removes data before the minimum timestmap from the head.
 func (h *Head) gc() {
-	defer runtime.GC()
-
 	// Only data strictly lower than this timestamp must be deleted.
 	mint := h.MinTime()
 
