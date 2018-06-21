@@ -237,6 +237,7 @@ type Block struct {
 
 	dir  string
 	meta BlockMeta
+	l    int
 
 	chunkr     ChunkReader
 	indexr     IndexReader
@@ -271,8 +272,13 @@ func OpenBlock(dir string, pool chunkenc.Pool) (*Block, error) {
 		chunkr:     cr,
 		indexr:     ir,
 		tombstones: tr,
+		l:          cr.Len(),
 	}
 	return pb, nil
+}
+
+func (pb *Block) Len() int {
+	return pb.l
 }
 
 // Close closes the on-disk block. It blocks as long as there are readers reading from the block.

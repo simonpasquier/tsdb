@@ -287,6 +287,14 @@ type Reader struct {
 	pool chunkenc.Pool
 }
 
+func (r *Reader) Len() int {
+	var l int
+	for _, b := range r.bs {
+		l += b.Len()
+	}
+	return l
+}
+
 func newReader(bs []ByteSlice, cs []io.Closer, pool chunkenc.Pool) (*Reader, error) {
 	cr := Reader{pool: pool, bs: bs, cs: cs}
 

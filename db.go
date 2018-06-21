@@ -497,6 +497,7 @@ func (db *DB) reload(deleteable ...string) (err error) {
 		exist  = map[ulid.ULID]struct{}{}
 	)
 
+	var l int
 	for _, dir := range dirs {
 		meta, err := readMetaFile(dir)
 		if err != nil {
@@ -513,6 +514,7 @@ func (db *DB) reload(deleteable ...string) (err error) {
 			if err != nil {
 				return errors.Wrapf(err, "open block %s", dir)
 			}
+			l += b.Len()
 		}
 
 		blocks = append(blocks, b)
