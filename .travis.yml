@@ -1,3 +1,7 @@
+os:
+- linux
+- windows
+
 # sudo is enabled because it provides more memory which was needed to run go test -race
 sudo: required
 dist: trusty
@@ -13,6 +17,15 @@ install:
   - go get -v -t ./...
 
 script:
-  # `check_license` target is omitted due to some missing license headers
-  # `staticcheck` target is omitted due to linting errors
-  - make style unused test
+  - |
+    (
+      set -Eeuo pipefail
+      set -x
+      if [ "$TRAVIS_OS_NAME" = 'windows' ]; then
+        go test -v ./...
+      else
+        # `check_license` target is omitted due to some missing license headers
+        # `staticcheck` target is omitted due to linting errors
+        make style unused test
+      fi
+    )
