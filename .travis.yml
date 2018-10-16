@@ -22,7 +22,9 @@ script:
       set -Eeuo pipefail
       set -x
       if [ "$TRAVIS_OS_NAME" = 'windows' ]; then
+        df -h
         go test -v ./...
+        df -h
       else
         # `check_license` target is omitted due to some missing license headers
         # `staticcheck` target is omitted due to linting errors
