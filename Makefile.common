@@ -40,8 +40,8 @@ endif
 
 	unexport GOVENDOR
 else
-	$(warning This repository requires Go >= 1.11 because of Go modules)
-	$(warning Some recipes may not work as expected as the current Go runtime is '$(shell $(GO) version)')
+$(warning This repository requires Go >= 1.11 because of Go modules)
+$(warning Some recipes may not work as expected as the current Go runtime is '$(shell $(GO) version)')
 endif
 else
 # This repository isn't using Go modules (yet).
