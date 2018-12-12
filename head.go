@@ -675,11 +675,12 @@ func (h *Head) getAppendBuffer() []RefSample {
 	if b == nil {
 		return make([]RefSample, 0, 512)
 	}
-	return b.([]RefSample)
+	return *b.(*[]RefSample)
 }
 
 func (h *Head) putAppendBuffer(b []RefSample) {
-	h.appendPool.Put(b[:0])
+	bb := b[:0]
+	h.appendPool.Put(&bb)
 }
 
 func (h *Head) getBytesBuffer() []byte {
@@ -687,11 +688,12 @@ func (h *Head) getBytesBuffer() []byte {
 	if b == nil {
 		return make([]byte, 0, 1024)
 	}
-	return b.([]byte)
+	return *b.(*[]byte)
 }
 
 func (h *Head) putBytesBuffer(b []byte) {
-	h.bytesPool.Put(b[:0])
+	bb := b[:0]
+	h.bytesPool.Put(&bb)
 }
 
 type headAppender struct {

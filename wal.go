@@ -909,17 +909,20 @@ func (r *walReader) Read(
 				if seriesf != nil {
 					seriesf(v)
 				}
-				seriesPool.Put(v[:0])
+				vv := v[:0]
+				seriesPool.Put(&vv)
 			case []RefSample:
 				if samplesf != nil {
 					samplesf(v)
 				}
-				samplePool.Put(v[:0])
+				vv := v[:0]
+				samplePool.Put(&vv)
 			case []Stone:
 				if deletesf != nil {
 					deletesf(v)
 				}
-				deletePool.Put(v[:0])
+				vv := v[:0]
+				deletePool.Put(&vv)
 			default:
 				level.Error(r.logger).Log("msg", "unexpected data type")
 			}
@@ -935,66 +938,69 @@ func (r *walReader) Read(
 		// Those should generally be catched by entry decoding before.
 		switch et {
 		case WALEntrySeries:
-			var series []RefSeries
+			var series *[]RefSeries
 			if v := seriesPool.Get(); v == nil {
-				series = make([]RefSeries, 0, 512)
+				s := make([]RefSeries, 0, 512)
+				series = &s
 			} else {
-				series = v.([]RefSeries)
+				series = v.(*[]RefSeries)
 			}
 
-			err = r.decodeSeries(flag, b, &series)
+			err = r.decodeSeries(flag, b, series)
 			if err != nil {
 				err = errors.Wrap(err, "decode series entry")
 				break
 			}
-			datac <- series
+			datac <- *series
 
 			cf := r.current()
-			for _, s := range series {
+			for _, s := range *series {
 				if cf.minSeries > s.Ref {
 					cf.minSeries = s.Ref
 				}
 			}
 		case WALEntrySamples:
-			var samples []RefSample
+			var samples *[]RefSample
 			if v := samplePool.Get(); v == nil {
-				samples = make([]RefSample, 0, 512)
+				s := make([]RefSample, 0, 512)
+				samples = &s
 			} else {
-				samples = v.([]RefSample)
+				samples = v.(*[]RefSample)
 			}
 
-			err = r.decodeSamples(flag, b, &samples)
+			err = r.decodeSamples(flag, b, samples)
 			if err != nil {
 				err = errors.Wrap(err, "decode samples entry")
 				break
 			}
-			datac <- samples
+			datac <- *samples
 
 			// Update the times for the WAL segment file.
 			cf := r.current()
-			for _, s := range samples {
+			for _, s := range *samples {
 				if cf.maxTime < s.T {
 					cf.maxTime = s.T
 				}
 			}
 		case WALEntryDeletes:
-			var deletes []Stone
+			var deletes *[]Stone
 			if v := deletePool.Get(); v == nil {
-				deletes = make([]Stone, 0, 512)
+				d := make([]Stone, 0, 512)
+				deletes = &d
 			} else {
-				deletes = v.([]Stone)
+				deletes = v.(*[]Stone)
 			}
 
-			err = r.decodeDeletes(flag, b, &deletes)
+			err = r.decodeDeletes(flag, b, deletes)
 			if err != nil {
 				err = errors.Wrap(err, "decode delete entry")
 				break
 			}
-			datac <- deletes
+			datac <- *deletes
 
 			// Update the times for the WAL segment file.
 			cf := r.current()
-			for _, s := range deletes {
+			for _, s := range *deletes {
 				for _, iv := range s.intervals {
 					if cf.maxTime < iv.Maxt {
 						cf.maxTime = iv.Maxt
