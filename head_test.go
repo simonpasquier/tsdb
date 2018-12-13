@@ -389,8 +389,8 @@ Outer:
 func TestDeleteUntilCurMax(t *testing.T) {
 	numSamples := int64(10)
 	hb, err := NewHead(nil, nil, nil, 1000000)
-	defer hb.Close()
 	testutil.Ok(t, err)
+	defer hb.Close()
 	app := hb.Appender()
 	smpls := make([]float64, numSamples)
 	for i := int64(0); i < numSamples; i++ {

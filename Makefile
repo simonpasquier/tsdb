@@ -18,7 +18,10 @@ TSDB_BENCHMARK_NUM_METRICS ?= 1000
 TSDB_BENCHMARK_DATASET ?= "$(TSDB_PROJECT_DIR)/testdata/20kseries.json"
 TSDB_BENCHMARK_OUTPUT_DIR ?= "$(TSDB_CLI_DIR)/benchout"
 
-STATICCHECK_IGNORE =
+STATICCHECK_IGNORE = \
+	github.com/prometheus/tsdb/head.go:SA6002 \
+	github.com/prometheus/tsdb/wal.go:SA6002 \
+	
 include Makefile.common
 
 build:
