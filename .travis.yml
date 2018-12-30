@@ -16,7 +16,9 @@ go_import_path: github.com/prometheus/tsdb
 before_install:
   - if [[ "$TRAVIS_OS_NAME" == "windows" ]]; then choco install make; fi
 
+install:
+  - make deps
+
 script:
   # `staticcheck` target is omitted due to linting errors
-  - GO111MODULE=on go list -e -json -compiled -test=true -export=false -deps=true -find=false -tags= -- ./...
   - if [[ "$TRAVIS_OS_NAME" == "windows" ]]; then make test; else make; fi
