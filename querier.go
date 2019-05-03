@@ -383,7 +383,7 @@ func postingsForMatcher(ix IndexReader, m labels.Matcher) (index.Postings, error
 	return index.Merge(rit...), nil
 }
 
-// inversePostingsForMatcher eeturns the postings for the series with the label name set but not matching the matcher.
+// inversePostingsForMatcher returns the postings for the series with the label name set but not matching the matcher.
 func inversePostingsForMatcher(ix IndexReader, m labels.Matcher) (index.Postings, error) {
 	tpls, err := ix.LabelValues(m.Name())
 	if err != nil {
