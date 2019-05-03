@@ -309,7 +309,7 @@ func TestHeadDeleteSimple(t *testing.T) {
 		return ss
 	}
 	smplsAll := buildSmpls([]int64{0, 1, 2, 3, 4, 5, 6, 7, 8, 9})
-	lblDefault := labels.Label{"a", "b"}
+	lblDefault := labels.Label{Name: "a", Value: "b"}
 
 	cases := []struct {
 		dranges  Intervals
@@ -472,7 +472,7 @@ func TestDeleteUntilCurMax(t *testing.T) {
 	smpls := make([]float64, numSamples)
 	for i := int64(0); i < numSamples; i++ {
 		smpls[i] = rand.Float64()
-		_, err := app.Add(labels.Labels{{"a", "b"}}, i, smpls[i])
+		_, err := app.Add(labels.Labels{{Name: "a", Value: "b"}}, i, smpls[i])
 		testutil.Ok(t, err)
 	}
 	testutil.Ok(t, app.Commit())
@@ -487,7 +487,7 @@ func TestDeleteUntilCurMax(t *testing.T) {
 
 	// Add again and test for presence.
 	app = hb.Appender()
-	_, err = app.Add(labels.Labels{{"a", "b"}}, 11, 1)
+	_, err = app.Add(labels.Labels{{Name: "a", Value: "b"}}, 11, 1)
 	testutil.Ok(t, err)
 	testutil.Ok(t, app.Commit())
 	q, err = NewBlockQuerier(hb, 0, 100000)
@@ -518,7 +518,7 @@ func TestDeletedSamplesAndSeriesStillInWALAfterCheckpoint(t *testing.T) {
 	defer hb.Close()
 	for i := 0; i < numSamples; i++ {
 		app := hb.Appender()
-		_, err := app.Add(labels.Labels{{"a", "b"}}, int64(i), 0)
+		_, err := app.Add(labels.Labels{{Name: "a", Value: "b"}}, int64(i), 0)
 		testutil.Ok(t, err)
 		testutil.Ok(t, app.Commit())
 	}
@@ -559,44 +559,44 @@ func TestDelete_e2e(t *testing.T) {
 	// Create 8 series with 1000 data-points of different ranges, delete and run queries.
 	lbls := [][]labels.Label{
 		{
-			{"a", "b"},
-			{"instance", "localhost:9090"},
-			{"job", "prometheus"},
+			{Name: "a", Value: "b"},
+			{Name: "instance", Value: "localhost:9090"},
+			{Name: "job", Value: "prometheus"},
 		},
 		{
-			{"a", "b"},
-			{"instance", "127.0.0.1:9090"},
-			{"job", "prometheus"},
+			{Name: "a", Value: "b"},
+			{Name: "instance", Value: "127.0.0.1:9090"},
+			{Name: "job", Value: "prometheus"},
 		},
 		{
-			{"a", "b"},
-			{"instance", "127.0.0.1:9090"},
-			{"job", "prom-k8s"},
+			{Name: "a", Value: "b"},
+			{Name: "instance", Value: "127.0.0.1:9090"},
+			{Name: "job", Value: "prom-k8s"},
 		},
 		{
-			{"a", "b"},
-			{"instance", "localhost:9090"},
-			{"job", "prom-k8s"},
+			{Name: "a", Value: "b"},
+			{Name: "instance", Value: "localhost:9090"},
+			{Name: "job", Value: "prom-k8s"},
 		},
 		{
-			{"a", "c"},
-			{"instance", "localhost:9090"},
-			{"job", "prometheus"},
+			{Name: "a", Value: "c"},
+			{Name: "instance", Value: "localhost:9090"},
+			{Name: "job", Value: "prometheus"},
 		},
 		{
-			{"a", "c"},
-			{"instance", "127.0.0.1:9090"},
-			{"job", "prometheus"},
+			{Name: "a", Value: "c"},
+			{Name: "instance", Value: "127.0.0.1:9090"},
+			{Name: "job", Value: "prometheus"},
 		},
 		{
-			{"a", "c"},
-			{"instance", "127.0.0.1:9090"},
-			{"job", "prom-k8s"},
+			{Name: "a", Value: "c"},
+			{Name: "instance", Value: "127.0.0.1:9090"},
+			{Name: "job", Value: "prom-k8s"},
 		},
 		{
-			{"a", "c"},
-			{"instance", "localhost:9090"},
-			{"job", "prom-k8s"},
+			{Name: "a", Value: "c"},
+			{Name: "instance", Value: "localhost:9090"},
+			{Name: "job", Value: "prom-k8s"},
 		},
 	}
 	seriesMap := map[string][]tsdbutil.Sample{}

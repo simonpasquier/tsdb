@@ -261,7 +261,7 @@ Outer:
 		smpls := make([]float64, numSamples)
 		for i := int64(0); i < numSamples; i++ {
 			smpls[i] = rand.Float64()
-			app.Add(labels.Labels{{"a", "b"}}, i, smpls[i])
+			app.Add(labels.Labels{{Name: "a", Value: "b"}}, i, smpls[i])
 		}
 
 		testutil.Ok(t, app.Commit())
@@ -385,9 +385,9 @@ func TestSkippingInvalidValuesInSameTxn(t *testing.T) {
 
 	// Append AmendedValue.
 	app := db.Appender()
-	_, err := app.Add(labels.Labels{{"a", "b"}}, 0, 1)
+	_, err := app.Add(labels.Labels{{Name: "a", Value: "b"}}, 0, 1)
 	testutil.Ok(t, err)
-	_, err = app.Add(labels.Labels{{"a", "b"}}, 0, 2)
+	_, err = app.Add(labels.Labels{{Name: "a", Value: "b"}}, 0, 2)
 	testutil.Ok(t, err)
 	testutil.Ok(t, app.Commit())
 
@@ -398,14 +398,14 @@ func TestSkippingInvalidValuesInSameTxn(t *testing.T) {
 	ssMap := query(t, q, labels.NewEqualMatcher("a", "b"))
 
 	testutil.Equals(t, map[string][]tsdbutil.Sample{
-		labels.New(labels.Label{"a", "b"}).String(): {sample{0, 1}},
+		labels.New(labels.Label{Name: "a", Value: "b"}).String(): {sample{0, 1}},
 	}, ssMap)
 
 	// Append Out of Order Value.
 	app = db.Appender()
-	_, err = app.Add(labels.Labels{{"a", "b"}}, 10, 3)
+	_, err = app.Add(labels.Labels{{Name: "a", Value: "b"}}, 10, 3)
 	testutil.Ok(t, err)
-	_, err = app.Add(labels.Labels{{"a", "b"}}, 7, 5)
+	_, err = app.Add(labels.Labels{{Name: "a", Value: "b"}}, 7, 5)
 	testutil.Ok(t, err)
 	testutil.Ok(t, app.Commit())
 
@@ -415,7 +415,7 @@ func TestSkippingInvalidValuesInSameTxn(t *testing.T) {
 	ssMap = query(t, q, labels.NewEqualMatcher("a", "b"))
 
 	testutil.Equals(t, map[string][]tsdbutil.Sample{
-		labels.New(labels.Label{"a", "b"}).String(): {sample{0, 1}, sample{10, 3}},
+		labels.New(labels.Label{Name: "a", Value: "b"}).String(): {sample{0, 1}, sample{10, 3}},
 	}, ssMap)
 }
 
@@ -480,7 +480,7 @@ func TestDB_SnapshotWithDelete(t *testing.T) {
 	smpls := make([]float64, numSamples)
 	for i := int64(0); i < numSamples; i++ {
 		smpls[i] = rand.Float64()
-		app.Add(labels.Labels{{"a", "b"}}, i, smpls[i])
+		app.Add(labels.Labels{{Name: "a", Value: "b"}}, i, smpls[i])
 	}
 
 	testutil.Ok(t, app.Commit())
@@ -569,44 +569,44 @@ func TestDB_e2e(t *testing.T) {
 	// Create 8 series with 1000 data-points of different ranges and run queries.
 	lbls := [][]labels.Label{
 		{
-			{"a", "b"},
-			{"instance", "localhost:9090"},
-			{"job", "prometheus"},
+			{Name: "a", Value: "b"},
+			{Name: "instance", Value: "localhost:9090"},
+			{Name: "job", Value: "prometheus"},
 		},
 		{
-			{"a", "b"},
-			{"instance", "127.0.0.1:9090"},
-			{"job", "prometheus"},
+			{Name: "a", Value: "b"},
+			{Name: "instance", Value: "127.0.0.1:9090"},
+			{Name: "job", Value: "prometheus"},
 		},
 		{
-			{"a", "b"},
-			{"instance", "127.0.0.1:9090"},
-			{"job", "prom-k8s"},
+			{Name: "a", Value: "b"},
+			{Name: "instance", Value: "127.0.0.1:9090"},
+			{Name: "job", Value: "prom-k8s"},
 		},
 		{
-			{"a", "b"},
-			{"instance", "localhost:9090"},
-			{"job", "prom-k8s"},
+			{Name: "a", Value: "b"},
+			{Name: "instance", Value: "localhost:9090"},
+			{Name: "job", Value: "prom-k8s"},
 		},
 		{
-			{"a", "c"},
-			{"instance", "localhost:9090"},
-			{"job", "prometheus"},
+			{Name: "a", Value: "c"},
+			{Name: "instance", Value: "localhost:9090"},
+			{Name: "job", Value: "prometheus"},
 		},
 		{
-			{"a", "c"},
-			{"instance", "127.0.0.1:9090"},
-			{"job", "prometheus"},
+			{Name: "a", Value: "c"},
+			{Name: "instance", Value: "127.0.0.1:9090"},
+			{Name: "job", Value: "prometheus"},
 		},
 		{
-			{"a", "c"},
-			{"instance", "127.0.0.1:9090"},
-			{"job", "prom-k8s"},
+			{Name: "a", Value: "c"},
+			{Name: "instance", Value: "127.0.0.1:9090"},
+			{Name: "job", Value: "prom-k8s"},
 		},
 		{
-			{"a", "c"},
-			{"instance", "localhost:9090"},
-			{"job", "prom-k8s"},
+			{Name: "a", Value: "c"},
+			{Name: "instance", Value: "localhost:9090"},
+			{Name: "job", Value: "prom-k8s"},
 		},
 	}
 
@@ -807,7 +807,7 @@ func TestTombstoneClean(t *testing.T) {
 	smpls := make([]float64, numSamples)
 	for i := int64(0); i < numSamples; i++ {
 		smpls[i] = rand.Float64()
-		app.Add(labels.Labels{{"a", "b"}}, i, smpls[i])
+		app.Add(labels.Labels{{Name: "a", Value: "b"}}, i, smpls[i])
 	}
 
 	testutil.Ok(t, app.Commit())
@@ -2100,7 +2100,7 @@ func TestBlockRanges(t *testing.T) {
 		os.RemoveAll(dir)
 	}()
 	app := db.Appender()
-	lbl := labels.Labels{{"a", "b"}}
+	lbl := labels.Labels{{Name: "a", Value: "b"}}
 	_, err = app.Add(lbl, firstBlockMaxT-1, rand.Float64())
 	if err == nil {
 		t.Fatalf("appending a sample with a timestamp covered by a previous block shouldn't be possible")

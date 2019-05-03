@@ -577,7 +577,7 @@ func TestBaseChunkSeries(t *testing.T) {
 		{
 			series: []refdSeries{
 				{
-					lset: labels.New([]labels.Label{{"a", "a"}}...),
+					lset: labels.New([]labels.Label{{Name: "a", Value: "a"}}...),
 					chunks: []chunks.Meta{
 						{Ref: 29}, {Ref: 45}, {Ref: 245}, {Ref: 123}, {Ref: 4232}, {Ref: 5344},
 						{Ref: 121},
@@ -585,19 +585,19 @@ func TestBaseChunkSeries(t *testing.T) {
 					ref: 12,
 				},
 				{
-					lset: labels.New([]labels.Label{{"a", "a"}, {"b", "b"}}...),
+					lset: labels.New([]labels.Label{{Name: "a", Value: "a"}, {Name: "b", Value: "b"}}...),
 					chunks: []chunks.Meta{
 						{Ref: 82}, {Ref: 23}, {Ref: 234}, {Ref: 65}, {Ref: 26},
 					},
 					ref: 10,
 				},
 				{
-					lset:   labels.New([]labels.Label{{"b", "c"}}...),
+					lset:   labels.New([]labels.Label{{Name: "b", Value: "c"}}...),
 					chunks: []chunks.Meta{{Ref: 8282}},
 					ref:    1,
 				},
 				{
-					lset: labels.New([]labels.Label{{"b", "b"}}...),
+					lset: labels.New([]labels.Label{{Name: "b", Value: "b"}}...),
 					chunks: []chunks.Meta{
 						{Ref: 829}, {Ref: 239}, {Ref: 2349}, {Ref: 659}, {Ref: 269},
 					},
@@ -610,14 +610,14 @@ func TestBaseChunkSeries(t *testing.T) {
 		{
 			series: []refdSeries{
 				{
-					lset: labels.New([]labels.Label{{"a", "a"}, {"b", "b"}}...),
+					lset: labels.New([]labels.Label{{Name: "a", Value: "a"}, {Name: "b", Value: "b"}}...),
 					chunks: []chunks.Meta{
 						{Ref: 82}, {Ref: 23}, {Ref: 234}, {Ref: 65}, {Ref: 26},
 					},
 					ref: 10,
 				},
 				{
-					lset:   labels.New([]labels.Label{{"b", "c"}}...),
+					lset:   labels.New([]labels.Label{{Name: "b", Value: "c"}}...),
 					chunks: []chunks.Meta{{Ref: 8282}},
 					ref:    3,
 				},
@@ -1093,7 +1093,7 @@ func TestChunkSeriesIterator_NextWithMinTime(t *testing.T) {
 }
 
 func TestPopulatedCSReturnsValidChunkSlice(t *testing.T) {
-	lbls := []labels.Labels{labels.New(labels.Label{"a", "b"})}
+	lbls := []labels.Labels{labels.New(labels.Label{Name: "a", Value: "b"})}
 	chunkMetas := [][]chunks.Meta{
 		{
 			{MinTime: 1, MaxTime: 2, Ref: 1},
